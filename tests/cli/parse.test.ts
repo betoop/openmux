@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 import { parseCliArgs } from '../../src/cli/parse';
 
 describe('cli parser', () => {
@@ -15,6 +15,11 @@ describe('cli parser', () => {
   test('parses help topic for pane capture', () => {
     const result = parseCliArgs(['pane', 'capture', '--help']);
     expect(result).toEqual({ ok: true, command: { kind: 'help', topic: 'pane.capture' } });
+  });
+
+  test('parses help topic for layout export', () => {
+    const result = parseCliArgs(['layout', 'export', '--help']);
+    expect(result).toEqual({ ok: true, command: { kind: 'help', topic: 'layout.export' } });
   });
 
   test('parses attach --session', () => {
@@ -48,8 +53,46 @@ describe('cli parser', () => {
     expect(result).toEqual({ ok: true, command: { kind: 'session.list', json: true } });
   });
 
+  test('parses layout export file options', () => {
+    const result = parseCliArgs([
+      'layout',
+      'export',
+      '--file',
+      'layout.json',
+      '--name',
+      'dev',
+      '--json',
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      command: {
+        kind: 'layout.export',
+        file: 'layout.json',
+        name: 'dev',
+        json: true,
+      },
+    });
+  });
+
+  test('parses layout import file options', () => {
+    const result = parseCliArgs(['layout', 'import', '--file=layout.json', '--json']);
+    expect(result).toEqual({
+      ok: true,
+      command: { kind: 'layout.import', file: 'layout.json', json: true },
+    });
+  });
+
   test('parses pane split', () => {
-    const result = parseCliArgs(['pane', 'split', '--direction', 'vertical', '--workspace', '2', '--pane', 'stack:1']);
+    const result = parseCliArgs([
+      'pane',
+      'split',
+      '--direction',
+      'vertical',
+      '--workspace',
+      '2',
+      '--pane',
+      'stack:1',
+    ]);
     expect(result).toEqual({
       ok: true,
       command: {
@@ -103,6 +146,11 @@ describe('cli parser', () => {
 
   test('reports unknown update argument', () => {
     const result = parseCliArgs(['update', '--force']);
+    expect(result.ok).toBe(false);
+  });
+
+  test('reports missing layout import file', () => {
+    const result = parseCliArgs(['layout', 'import']);
     expect(result.ok).toBe(false);
   });
 });
