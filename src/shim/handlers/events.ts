@@ -3,10 +3,38 @@
  * Event sending utilities and bootstrapping suppression logic
  */
 import type { ShimHeader } from '../protocol';
-import type { ShimServerState } from '../server-state';
+import {
+  getActiveClientForSession,
+  getSessionIdForPty,
+  isActiveClientForSession,
+  type ShimServerState,
+} from '../server-state';
 import { sendFrame } from '../server/frames';
 import type { SendEvent } from './types';
 import type net from 'net';
+
+function isSocketWritable(socket: net.Socket): boolean {
+  return !(socket as { destroyed?: boolean }).destroyed;
+}
+
+function getEventTargets(state: ShimServerState, header: ShimHeader): net.Socket[] {
+  const ptyId = typeof header.ptyId === 'string' ? header.ptyId : null;
+  if (ptyId) {
+    const sessionId = getSessionIdForPty(state, ptyId);
+    if (!sessionId) return [];
+    const active = getActiveClientForSession(state, sessionId);
+    return active && isSocketWritable(active.socket) ? [active.socket] : [];
+  }
+
+  const sockets: net.Socket[] = [];
+  const seen = new Set<net.Socket>();
+  for (const active of state.activeClientsBySession.values()) {
+    if (seen.has(active.socket) || !isSocketWritable(active.socket)) continue;
+    seen.add(active.socket);
+    sockets.push(active.socket);
+  }
+  return sockets;
+}
 
 /**
  * Check if an event should be suppressed during bootstrapping
@@ -30,9 +58,10 @@ export function shouldSuppressBootstrappingEvent(
 export function isCurrentAttach(
   state: ShimServerState,
   socket: net.Socket,
-  clientId: string
+  clientId: string,
+  sessionId: string
 ): boolean {
-  return state.activeClient === socket && state.activeClientId === clientId;
+  return isActiveClientForSession(state, socket, clientId, sessionId);
 }
 
 /**
@@ -44,9 +73,10 @@ export function createEventSender(state: ShimServerState): SendEvent {
     payloads: ArrayBuffer[] = [],
     options?: { allowWhileBootstrapping?: boolean }
   ) => {
-    if (!state.activeClient) return;
     if (shouldSuppressBootstrappingEvent(state, header, options)) return;
-    sendFrame(state.activeClient, header, payloads);
+    for (const socket of getEventTargets(state, header)) {
+      sendFrame(socket, header, payloads);
+    }
   };
 }
 

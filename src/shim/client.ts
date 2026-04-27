@@ -6,6 +6,7 @@ import { unpackRow, unpackTerminalState, CELL_SIZE } from '../terminal/cell-seri
 import { RemoteEmulator } from './client/emulator';
 import { sendRequest } from './client/connection';
 import { bufferToArrayBuffer } from './client/utils';
+import { getActiveSessionIdForShim } from '../effect/bridge/app-coordinator-bridge';
 import type { ShimPtyMetadata } from './pty-metadata';
 import {
   getCachedPtyMetadata,
@@ -59,7 +60,10 @@ export async function createPty(options: {
   pixelWidth?: number;
   pixelHeight?: number;
 }): Promise<string> {
-  const response = await sendRequest('createPty', options);
+  const response = await sendRequest('createPty', {
+    ...options,
+    sessionId: getActiveSessionIdForShim() ?? undefined,
+  });
   return (response.header.result as { ptyId: string }).ptyId;
 }
 

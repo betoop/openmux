@@ -53,6 +53,7 @@ export interface ShimHandlerContext {
 export interface AttachContext {
   socket: net.Socket;
   clientId: string;
+  sessionId: string;
 }
 
 /** Bootstrap options for subscription operations */

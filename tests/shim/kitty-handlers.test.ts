@@ -2,9 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Buffer } from 'buffer';
-import { describe, expect, it } from "bun:test";
-import type { ITerminalEmulator, KittyGraphicsImageInfo } from '../../src/terminal/emulator-interface';
-import { KittyGraphicsCompression, KittyGraphicsFormat } from '../../src/terminal/emulator-interface';
+import { describe, expect, it } from 'bun:test';
+import type {
+  ITerminalEmulator,
+  KittyGraphicsImageInfo,
+} from '../../src/terminal/emulator-interface';
+import {
+  KittyGraphicsCompression,
+  KittyGraphicsFormat,
+} from '../../src/terminal/emulator-interface';
 import { createKittyHandlers } from '../../src/shim/server/kitty';
 import { createShimServerState } from '../../src/shim/server-state';
 
@@ -20,11 +26,17 @@ const makeImageInfo = (id: number, transmitTime: bigint): KittyGraphicsImageInfo
   transmitTime,
 });
 
+const attachClientForPty = (state: ReturnType<typeof createShimServerState>, ptyId: string) => {
+  const socket = {} as any;
+  state.ptySessions.set(ptyId, 'session-1');
+  state.activeClientsBySession.set('session-1', { socket, clientId: 'client-1' });
+};
+
 describe('createKittyHandlers', () => {
   it('forces image data after delete-all invalidation', () => {
     const state = createShimServerState();
     const events: Array<{ header: any; payloads: ArrayBuffer[] }> = [];
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, (header, payloads = []) => {
       events.push({ header, payloads });
@@ -71,7 +83,7 @@ describe('createKittyHandlers', () => {
 
   it('stores file-medium transmits in cache as direct payloads for replay', () => {
     const state = createShimServerState();
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, () => {});
 
@@ -96,7 +108,7 @@ describe('createKittyHandlers', () => {
   it('includes image data on snapshot when cached transmit uses shared memory', () => {
     const state = createShimServerState();
     const events: Array<{ header: any; payloads: ArrayBuffer[] }> = [];
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, (header, payloads = []) => {
       events.push({ header, payloads });
@@ -114,9 +126,13 @@ describe('createKittyHandlers', () => {
     } as ITerminalEmulator;
 
     const sharedMemoryPayload = Buffer.from('SHMKEY', 'utf8').toString('base64');
-    handlers.sendKittyTransmit('pty-1', `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`, {
-      fromReplay: true,
-    });
+    handlers.sendKittyTransmit(
+      'pty-1',
+      `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`,
+      {
+        fromReplay: true,
+      }
+    );
     handlers.sendKittyUpdate('pty-1', emulator, true);
 
     const transmit = events.find((event) => event.header.type === 'ptyKittyTransmit');
@@ -130,14 +146,17 @@ describe('createKittyHandlers', () => {
   it('still forwards shared-memory transmits during live streaming', () => {
     const state = createShimServerState();
     const events: Array<{ header: any; payloads: ArrayBuffer[] }> = [];
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, (header, payloads = []) => {
       events.push({ header, payloads });
     });
 
     const sharedMemoryPayload = Buffer.from('SHMKEY', 'utf8').toString('base64');
-    handlers.sendKittyTransmit('pty-1', `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`);
+    handlers.sendKittyTransmit(
+      'pty-1',
+      `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`
+    );
 
     const transmit = events.find((event) => event.header.type === 'ptyKittyTransmit');
     expect(transmit).toBeDefined();
@@ -146,17 +165,21 @@ describe('createKittyHandlers', () => {
   it('allows explicit shared-memory replay fallback forwarding', () => {
     const state = createShimServerState();
     const events: Array<{ header: any; payloads: ArrayBuffer[] }> = [];
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, (header, payloads = []) => {
       events.push({ header, payloads });
     });
 
     const sharedMemoryPayload = Buffer.from('SHMKEY', 'utf8').toString('base64');
-    handlers.sendKittyTransmit('pty-1', `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`, {
-      fromReplay: true,
-      allowSharedMemoryReplay: true,
-    });
+    handlers.sendKittyTransmit(
+      'pty-1',
+      `\x1b_Ga=T,t=s,s=10,v=12,S=120,i=1;${sharedMemoryPayload}\x1b\\`,
+      {
+        fromReplay: true,
+        allowSharedMemoryReplay: true,
+      }
+    );
 
     const transmit = events.find((event) => event.header.type === 'ptyKittyTransmit');
     expect(transmit).toBeDefined();
@@ -164,7 +187,7 @@ describe('createKittyHandlers', () => {
 
   it('finalizes chunked transmits when continuation chunks omit control params', () => {
     const state = createShimServerState();
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, () => {});
 
@@ -181,7 +204,7 @@ describe('createKittyHandlers', () => {
 
   it('tracks chunk continuations that carry m=1 without repeating ids', () => {
     const state = createShimServerState();
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, () => {});
 
@@ -200,7 +223,7 @@ describe('createKittyHandlers', () => {
 
   it('finalizes chunked transmits when relay-only continuation carries i without action', () => {
     const state = createShimServerState();
-    state.activeClient = {} as any;
+    attachClientForPty(state, 'pty-1');
 
     const handlers = createKittyHandlers(state, () => {});
 

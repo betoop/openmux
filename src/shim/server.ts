@@ -56,14 +56,12 @@ export async function startShimServer(
     });
 
     socket.on('close', () => {
-      shimState.clientIds.delete(socket);
       handlers.detachClient(socket).catch((e) => {
         console.warn('[shim] Detach on close failed:', e);
       });
     });
 
     socket.on('error', () => {
-      shimState.clientIds.delete(socket);
       handlers.detachClient(socket).catch((e) => {
         console.warn('[shim] Detach on error failed:', e);
       });

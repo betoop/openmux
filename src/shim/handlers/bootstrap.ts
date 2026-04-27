@@ -8,7 +8,11 @@ import { ShimConnectionError } from '../../effect/errors';
 import { ResourceStack } from '../../effect/resources';
 import { setKittyTransmitForwarder, setKittyUpdateForwarder } from '../kitty-forwarder';
 import { setNotificationForwarder } from '../notification-forwarder';
-import { rememberRevokedClientId } from '../server-state';
+import {
+  getClientSessionId,
+  isActiveClientForSession,
+  rememberRevokedClientId,
+} from '../server-state';
 import type { AttachContext, ShimHandlerContext, WithPty } from './types';
 import type { TerminalColors } from '../../terminal/terminal-colors';
 import { isCurrentAttach, sendDetached } from './events';
@@ -24,7 +28,7 @@ import { handleActivity, handleLifecycle, handleTitles } from './lifecycle';
  */
 export function startAttachBootstrap(context: ShimHandlerContext, attach: AttachContext): void {
   const { state } = context;
-  const { socket, clientId } = attach;
+  const { socket, clientId, sessionId } = attach;
 
   void (async () => {
     const ptyIdsResult = await subscribeAllPtys(context, {
@@ -33,13 +37,13 @@ export function startAttachBootstrap(context: ShimHandlerContext, attach: Attach
     });
 
     if (ptyIdsResult instanceof ShimConnectionError) {
-      if (isCurrentAttach(state, socket, clientId)) {
+      if (isCurrentAttach(state, socket, clientId, sessionId)) {
         console.warn('Failed to subscribe to PTYs:', ptyIdsResult.message);
       }
       return;
     }
 
-    if (!isCurrentAttach(state, socket, clientId)) return;
+    if (!isCurrentAttach(state, socket, clientId, sessionId)) return;
 
     if (!state.lifecycleUnsub) {
       const lifecycleResult = await handleLifecycle(context);
@@ -48,7 +52,7 @@ export function startAttachBootstrap(context: ShimHandlerContext, attach: Attach
       }
     }
 
-    if (!isCurrentAttach(state, socket, clientId)) return;
+    if (!isCurrentAttach(state, socket, clientId, sessionId)) return;
 
     if (!state.titleUnsub) {
       const titlesResult = await handleTitles(context);
@@ -57,7 +61,7 @@ export function startAttachBootstrap(context: ShimHandlerContext, attach: Attach
       }
     }
 
-    if (!isCurrentAttach(state, socket, clientId)) return;
+    if (!isCurrentAttach(state, socket, clientId, sessionId)) return;
 
     if (!state.activityUnsub) {
       const activityResult = await handleActivity(context);
@@ -66,48 +70,62 @@ export function startAttachBootstrap(context: ShimHandlerContext, attach: Attach
       }
     }
   })().catch((e) => {
-    if (!isCurrentAttach(state, socket, clientId)) return;
+    if (!isCurrentAttach(state, socket, clientId, sessionId)) return;
     console.warn('[shim] Attach bootstrap failed:', e);
   });
 }
 
 /**
- * Attach a new client, detaching any existing client.
+ * Attach a client to a session, detaching only the previous owner of that session.
  */
 export async function attachClient(
   context: ShimHandlerContext,
   attach: AttachContext
 ): Promise<void> {
   const { state, sendEvent, kittyHandlers } = context;
-  const { socket, clientId } = attach;
+  const { socket, clientId, sessionId } = attach;
 
   await using resources = new ResourceStack();
 
-  const previousClient = state.activeClient;
-  const previousClientId = previousClient ? (state.clientIds.get(previousClient) ?? null) : null;
-
-  await cleanupCurrentClientBindings(state, { preserveKittyState: true });
-
-  if (previousClient && !previousClient.destroyed) {
-    sendDetached(previousClient);
-    previousClient.end();
-    const prevClientRef = previousClient;
-    resources.defer(() => {
-      setTimeout(() => {
-        if (!prevClientRef.destroyed) {
-          prevClientRef.destroy();
-        }
-      }, 250);
-    });
+  const previousSessionId = getClientSessionId(state, socket);
+  if (
+    previousSessionId &&
+    previousSessionId !== sessionId &&
+    isActiveClientForSession(state, socket, clientId, previousSessionId)
+  ) {
+    state.activeClientsBySession.delete(previousSessionId);
   }
 
-  if (previousClientId) {
+  const previousOwner = state.activeClientsBySession.get(sessionId) ?? null;
+  const previousClient = previousOwner?.socket ?? null;
+  const previousClientId = previousOwner?.clientId ?? null;
+  if (previousClient && !previousClient.destroyed) {
+    const isSameClient = previousClient === socket && previousClientId === clientId;
+    if (!isSameClient) {
+      sendDetached(previousClient);
+      previousClient.end();
+      state.clientIds.delete(previousClient);
+      state.clientSessions.delete(previousClient);
+      const prevClientRef = previousClient;
+      if (!prevClientRef.destroyed) {
+        resources.defer(() => {
+          setTimeout(() => {
+            if (!prevClientRef.destroyed) {
+              prevClientRef.destroy();
+            }
+          }, 250);
+        });
+      }
+    }
+  }
+
+  if (previousClientId && previousClient !== socket) {
     rememberRevokedClientId(state, previousClientId);
   }
 
   state.clientIds.set(socket, clientId);
-  state.activeClient = socket;
-  state.activeClientId = clientId;
+  state.clientSessions.set(socket, sessionId);
+  state.activeClientsBySession.set(sessionId, { socket, clientId });
 
   setKittyTransmitForwarder(kittyHandlers.sendKittyTransmit);
   setKittyUpdateForwarder(kittyHandlers.queueKittyUpdate);
@@ -124,14 +142,29 @@ export async function attachClient(
 }
 
 /**
- * Detach current client.
+ * Detach a client from its active session.
  */
 export async function detachClient(context: ShimHandlerContext, socket: net.Socket): Promise<void> {
   const { state } = context;
-  if (state.activeClient !== socket) return;
+  const sessionId = state.clientSessions.get(socket) ?? null;
+  const clientId = state.clientIds.get(socket) ?? null;
 
-  state.activeClient = null;
-  state.activeClientId = null;
+  if (sessionId && clientId && isActiveClientForSession(state, socket, clientId, sessionId)) {
+    state.activeClientsBySession.delete(sessionId);
+  }
+  state.clientIds.delete(socket);
+  state.clientSessions.delete(socket);
+
+  if (sessionId) {
+    for (const [ptyId, ptySessionId] of state.ptySessions.entries()) {
+      if (ptySessionId === sessionId) {
+        state.bootstrappingPtyIds.delete(ptyId);
+      }
+    }
+  }
+
+  if (state.activeClientsBySession.size > 0) return;
+
   state.bootstrappingPtyIds.clear();
 
   // Keep the kitty transmit forwarder active so it continues caching transmits

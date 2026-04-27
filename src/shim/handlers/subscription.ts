@@ -13,7 +13,7 @@ import type { ITerminalEmulator } from '../../terminal/emulator-interface';
 import type { ShimServerState } from '../server-state';
 import type { BootstrapOptions, ShimHandlerContext } from './types';
 import { allowBootstrapReplay } from './replay';
-import { removeMappingForPty } from './mapping';
+import { getPtyIdsForSession, removeMappingForPty } from './mapping';
 
 type PtyStreamEvent =
   | { type: 'update'; update: UnifiedTerminalUpdate }
@@ -183,8 +183,8 @@ export async function subscribeToPty(
       return;
     }
 
-    removeMappingForPty(state, ptyId);
     context.sendEvent({ type: 'ptyExit', ptyId, exitCode: event.exitCode });
+    removeMappingForPty(state, ptyId);
   });
 
   if (unsubscribe instanceof ShimConnectionError) {
@@ -252,14 +252,20 @@ export async function subscribeAllPtys(
   context: ShimHandlerContext,
   options?: BootstrapOptions
 ): Promise<string[] | ShimConnectionError> {
-  const ptyIds = await callPty<string[]>(
+  const allPtyIds = await callPty<string[]>(
     context,
     'Failed to list PTYs',
     (pty) => pty.listAll() as Promise<string[] | Error>
   );
-  if (ptyIds instanceof ShimConnectionError) {
-    return ptyIds;
+  if (allPtyIds instanceof ShimConnectionError) {
+    return allPtyIds;
   }
+
+  const ptyIds = options?.attach
+    ? getPtyIdsForSession(context.state, options.attach.sessionId).filter((id) =>
+        allPtyIds.map(String).includes(id)
+      )
+    : allPtyIds.map(String);
 
   await Promise.all(
     ptyIds.map(async (id) => {

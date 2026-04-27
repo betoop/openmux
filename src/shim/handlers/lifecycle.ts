@@ -44,10 +44,12 @@ export async function handleLifecycle(
           console.warn(`Failed to subscribe to new PTY ${ptyId}:`, e);
         });
       } else {
+        sendEvent({ type: 'ptyLifecycle', ptyId, event: event.type });
         unsubscribeFromPty(state, ptyId).catch((e) => {
           console.warn(`Failed to unsubscribe from PTY ${ptyId}:`, e);
         });
         removeMappingForPty(state, ptyId);
+        return;
       }
       sendEvent({ type: 'ptyLifecycle', ptyId, event: event.type });
     })

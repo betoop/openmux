@@ -9,10 +9,17 @@ import { captureEmulator, type CaptureFormat } from '../control/capture';
 import type { ShimHeader } from './protocol';
 import {
   attachClient,
+  getPtyIdsForSession,
   registerMapping,
   removeMappingForPty,
   type ShimHandlerContext,
 } from './handlers';
+import {
+  getClientSessionId,
+  getSessionIdForPty,
+  isActiveClientForSession,
+  isActiveSocket,
+} from './server-state';
 import type { ShimPtyMetadata, ShimPtySessionInfo } from './pty-metadata';
 import type { TerminalColors } from '../terminal/terminal-colors';
 
@@ -244,7 +251,11 @@ export function createRequestHandler(context: ShimHandlerContext) {
     const requestParams = (header.params as Record<string, unknown>) ?? {};
 
     try {
-      if (method !== 'hello' && context.state.activeClient !== socket) {
+      if (
+        method !== 'hello' &&
+        method !== 'setHostColors' &&
+        !isActiveSocket(context.state, socket)
+      ) {
         context.sendError(socket, requestId, 'Inactive client');
         socket.end();
         return;
@@ -264,12 +275,21 @@ export function createRequestHandler(context: ShimHandlerContext) {
             socket.end();
             return;
           }
-          if (context.state.activeClient === socket && context.state.activeClientId === clientId) {
+          const sessionId =
+            typeof requestParams.sessionId === 'string' && requestParams.sessionId.trim()
+              ? requestParams.sessionId
+              : null;
+          context.state.clientIds.set(socket, clientId);
+          if (!sessionId) {
             context.sendResponse(socket, requestId, { pid: process.pid, clientId });
             return;
           }
-          await attachClient(context, { socket, clientId });
-          context.sendResponse(socket, requestId, { pid: process.pid, clientId });
+          if (isActiveClientForSession(context.state, socket, clientId, sessionId)) {
+            context.sendResponse(socket, requestId, { pid: process.pid, clientId, sessionId });
+            return;
+          }
+          await attachClient(context, { socket, clientId, sessionId });
+          context.sendResponse(socket, requestId, { pid: process.pid, clientId, sessionId });
           return;
         }
 
@@ -284,6 +304,10 @@ export function createRequestHandler(context: ShimHandlerContext) {
         }
 
         case 'createPty': {
+          const sessionId =
+            typeof requestParams.sessionId === 'string'
+              ? requestParams.sessionId
+              : getClientSessionId(context.state, socket);
           const ptyId = await context.withPty((pty) =>
             pty.create({
               cols: makeCols(requestParams.cols as number),
@@ -293,6 +317,9 @@ export function createRequestHandler(context: ShimHandlerContext) {
               pixelHeight: requestParams.pixelHeight as number | undefined,
             })
           );
+          if (sessionId) {
+            context.state.ptySessions.set(String(ptyId), sessionId);
+          }
           context.sendResponse(socket, requestId, { ptyId: String(ptyId) });
           return;
         }
@@ -340,10 +367,24 @@ export function createRequestHandler(context: ShimHandlerContext) {
           return;
         }
 
-        case 'destroyAll':
-          await context.withPty((pty) => pty.destroyAll());
+        case 'destroyAll': {
+          const sessionId = getClientSessionId(context.state, socket);
+          if (!sessionId) {
+            await context.withPty((pty) => pty.destroyAll());
+            context.sendResponse(socket, requestId);
+            return;
+          }
+
+          const ptyIds = getPtyIdsForSession(context.state, sessionId);
+          await context.withPty((pty) =>
+            Promise.all(ptyIds.map((ptyId) => pty.destroy(asPtyId(ptyId))))
+          );
+          for (const ptyId of ptyIds) {
+            removeMappingForPty(context.state, ptyId);
+          }
           context.sendResponse(socket, requestId);
           return;
+        }
 
         case 'shutdown':
           // Acknowledge first so the UI can exit immediately; PTY teardown continues in the background.
@@ -503,7 +544,13 @@ export function createRequestHandler(context: ShimHandlerContext) {
 
         case 'listAll': {
           const ids = (await context.withPty((pty) => pty.listAll())) as Array<string>;
-          context.sendResponse(socket, requestId, { ptyIds: ids.map(String) });
+          const sessionId = getClientSessionId(context.state, socket);
+          const ptyIds = ids
+            .map(String)
+            .filter(
+              (ptyId) => !sessionId || getSessionIdForPty(context.state, ptyId) === sessionId
+            );
+          context.sendResponse(socket, requestId, { ptyIds });
           return;
         }
 

@@ -160,7 +160,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-a' },
+      params: { clientId: 'client-a', sessionId: 'session-lock' },
     });
     const helloA = await readerA.nextFrame();
     expect(helloA.header.ok).toBe(true);
@@ -172,7 +172,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 2,
       method: 'hello',
-      params: { clientId: 'client-b' },
+      params: { clientId: 'client-b', sessionId: 'session-lock' },
     });
     const detached = await readerA.nextFrame();
     expect(detached.header.type).toBe('detached');
@@ -185,7 +185,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 3,
       method: 'hello',
-      params: { clientId: 'client-a' },
+      params: { clientId: 'client-a', sessionId: 'session-lock' },
     });
     const revoked = await readerARe.nextFrame();
     expect(revoked.header.ok).toBe(false);
@@ -227,7 +227,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-fast-hello' },
+      params: { clientId: 'client-fast-hello', sessionId: 'session-fast' },
     });
 
     const hello = await reader.nextFrame(100);
@@ -309,26 +309,59 @@ describe('shim server', () => {
       setHostColors: () => {},
     });
 
-    const client = await connectClient(socketPath);
-    const reader = createFrameQueue(client);
-    await sendRequest(client, {
+    const clientA = await connectClient(socketPath);
+    const readerA = createFrameQueue(clientA);
+    await sendRequest(clientA, {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-single-replay' },
+      params: { clientId: 'client-single-replay-a', sessionId: 'session-replay' },
     });
 
-    const hello = await reader.nextFrame();
+    const hello = await readerA.nextFrame();
     expect(hello.header.ok).toBe(true);
 
-    const firstUpdate = await reader.nextFrame();
+    await sendRequest(clientA, {
+      type: 'request',
+      requestId: 2,
+      method: 'registerPane',
+      params: { sessionId: 'session-replay', paneId: 'pane-1', ptyId: 'pty-1' },
+    });
+    const registerResponse = await readerA.nextFrame();
+    expect(registerResponse.header.ok).toBe(true);
+
+    const clientB = await connectClient(socketPath);
+    const readerB = createFrameQueue(clientB);
+    await sendRequest(clientB, {
+      type: 'request',
+      requestId: 3,
+      method: 'hello',
+      params: { clientId: 'client-single-replay-b', sessionId: 'session-replay' },
+    });
+
+    let sawHello = false;
+    let firstUpdate: Frame | undefined;
+    for (let i = 0; i < 6 && (!sawHello || !firstUpdate); i += 1) {
+      const frame = await readerB.nextFrame();
+      if (frame.header.type === 'response' && frame.header.requestId === 3) {
+        sawHello = true;
+      }
+      if (frame.header.type === 'ptyUpdate') {
+        firstUpdate = frame;
+      }
+    }
+
+    expect(sawHello).toBe(true);
+    expect(firstUpdate).toBeDefined();
+    if (!firstUpdate) throw new Error('Missing first PTY update');
     expect(firstUpdate.header.type).toBe('ptyUpdate');
     expect(firstUpdate.header.ptyId).toBe('pty-1');
 
-    const duplicateUpdate = await nextFrameSafe(reader, 150);
+    const duplicateUpdate = await nextFrameSafe(readerB, 150);
     expect(duplicateUpdate?.header.type).not.toBe('ptyUpdate');
 
-    client.destroy();
+    clientA.destroy();
+    clientB.destroy();
     server.close();
     await fs.rm(socketDir, { recursive: true, force: true });
   });
@@ -356,7 +389,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-a' },
+      params: { clientId: 'client-a', sessionId: 'session-race' },
     });
     const helloA = await readerA.nextFrame();
     expect(helloA.header.ok).toBe(true);
@@ -369,13 +402,13 @@ describe('shim server', () => {
         type: 'request',
         requestId: 2,
         method: 'hello',
-        params: { clientId: 'client-b' },
+        params: { clientId: 'client-b', sessionId: 'session-race' },
       }),
       sendRequest(clientA, {
         type: 'request',
         requestId: 3,
         method: 'hello',
-        params: { clientId: 'client-a' },
+        params: { clientId: 'client-a', sessionId: 'session-race' },
       }),
     ]);
 
@@ -431,7 +464,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-map' },
+      params: { clientId: 'client-map', sessionId: 'session-1' },
     });
     await reader.nextFrame();
 
@@ -488,7 +521,7 @@ describe('shim server', () => {
       type: 'request',
       requestId: 1,
       method: 'hello',
-      params: { clientId: 'client-stale' },
+      params: { clientId: 'client-stale', sessionId: 'session-2' },
     });
     await reader.nextFrame();
 

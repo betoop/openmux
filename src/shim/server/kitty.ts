@@ -16,7 +16,12 @@ import {
 } from '../../terminal/kitty-graphics/sequence-utils';
 import { tracePtyEvent } from '../../terminal/pty-trace';
 import type { ShimHeader } from '../protocol';
-import type { KittyScreenImages, KittyScreenKey, ShimServerState } from '../server-state';
+import {
+  hasActiveClientForPty,
+  type KittyScreenImages,
+  type KittyScreenKey,
+  type ShimServerState,
+} from '../server-state';
 
 /**
  * Handlers for Kitty graphics protocol operations.
@@ -328,7 +333,7 @@ export function createKittyHandlers(state: ShimServerState, sendEvent: SendEvent
       recordKittyTransmit(ptyId, sequence);
     }
 
-    if (!state.activeClient) return;
+    if (!hasActiveClientForPty(state, ptyId)) return;
 
     // Shared-memory transmits are fragile during replay (handles may no longer
     // be valid). Prefer ptyKitty imageData payloads, but allow explicit
@@ -355,7 +360,7 @@ export function createKittyHandlers(state: ShimServerState, sendEvent: SendEvent
     force: boolean = false,
     options?: { allowWhileBootstrapping?: boolean }
   ): void => {
-    if (!state.activeClient) return;
+    if (!hasActiveClientForPty(state, ptyId)) return;
     if (!isKittyGraphicsEmulator(emulator)) return;
 
     const dirty = emulator.getKittyImagesDirty();
@@ -491,7 +496,7 @@ export function createKittyHandlers(state: ShimServerState, sendEvent: SendEvent
   };
 
   const queueKittyUpdate = (ptyId: string) => {
-    if (!state.activeClient) return;
+    if (!hasActiveClientForPty(state, ptyId)) return;
     pendingKittyUpdates.add(ptyId);
     if (!kittyUpdateScheduled) {
       kittyUpdateScheduled = true;

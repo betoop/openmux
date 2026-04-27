@@ -25,18 +25,24 @@ type PtySubscriptions = Map<string, PtySubscriptionHandle>;
 
 type ShimPtyEmulator = ITerminalEmulator & Partial<IKittyGraphicsEmulator>;
 
+export type ActiveShimClient = {
+  socket: net.Socket;
+  clientId: string;
+};
+
 const MAX_REVOKED_CLIENT_IDS = 32;
 
 /**
  * Central state container for the shim server.
  *
- * Single-client lock semantics:
- * - `activeClient` / `activeClientId` identify the only socket allowed to issue
- *   non-hello requests and receive live events.
- * - A new hello steals the lock, detaches the previous socket, and becomes the
- *   sole event sink for bootstrap replay + live updates.
- * - Async bootstrap work re-checks the active socket/client pair before sending
- *   replay frames, so socket identity is the concurrency guard.
+ * Session-scoped client lock semantics:
+ * - `activeClientsBySession` identifies the one socket allowed to issue
+ *   non-hello requests and receive live events for a session.
+ * - A new hello for the same session steals that session's lock, detaches the
+ *   previous socket, and becomes the event sink for bootstrap replay + updates.
+ * - Different sessions may be owned by different sockets at the same time.
+ * - Async bootstrap work re-checks the active socket/client/session triple before
+ *   sending replay frames, so socket identity is the concurrency guard.
  *
  * Revoked client policy:
  * - Detached client IDs are added to `revokedClientIds` so an old UI process
@@ -47,7 +53,10 @@ const MAX_REVOKED_CLIENT_IDS = 32;
 export type ShimServerState = {
   sessionPanes: Map<string, Map<string, string>>;
   ptyToPane: Map<string, { sessionId: string; paneId: string }>;
+  ptySessions: Map<string, string>;
   clientIds: Map<net.Socket, string>;
+  clientSessions: Map<net.Socket, string>;
+  activeClientsBySession: Map<string, ActiveShimClient>;
   revokedClientIds: Set<string>;
   revokedClientOrder: string[];
   ptySubscriptions: PtySubscriptions;
@@ -60,8 +69,6 @@ export type ShimServerState = {
   lifecycleUnsub: (() => void) | null;
   titleUnsub: (() => void) | null;
   activityUnsub: (() => void) | null;
-  activeClient: net.Socket | null;
-  activeClientId: string | null;
   bootstrappingPtyIds: Set<string>;
   hostColorsSet: boolean;
 };
@@ -74,7 +81,10 @@ export function createShimServerState(): ShimServerState {
   return {
     sessionPanes: new Map(),
     ptyToPane: new Map(),
+    ptySessions: new Map(),
     clientIds: new Map(),
+    clientSessions: new Map(),
+    activeClientsBySession: new Map(),
     revokedClientIds: new Set(),
     revokedClientOrder: [],
     ptySubscriptions: new Map(),
@@ -87,11 +97,47 @@ export function createShimServerState(): ShimServerState {
     lifecycleUnsub: null,
     titleUnsub: null,
     activityUnsub: null,
-    activeClient: null,
-    activeClientId: null,
     bootstrappingPtyIds: new Set(),
     hostColorsSet: false,
   };
+}
+
+export function getClientSessionId(state: ShimServerState, socket: net.Socket): string | null {
+  return state.clientSessions.get(socket) ?? null;
+}
+
+export function getActiveClientForSession(
+  state: ShimServerState,
+  sessionId: string
+): ActiveShimClient | null {
+  return state.activeClientsBySession.get(sessionId) ?? null;
+}
+
+export function isActiveClientForSession(
+  state: ShimServerState,
+  socket: net.Socket,
+  clientId: string,
+  sessionId: string
+): boolean {
+  const active = getActiveClientForSession(state, sessionId);
+  return active?.socket === socket && active.clientId === clientId;
+}
+
+export function isActiveSocket(state: ShimServerState, socket: net.Socket): boolean {
+  const sessionId = getClientSessionId(state, socket);
+  if (!sessionId) return false;
+  const clientId = state.clientIds.get(socket);
+  if (!clientId) return false;
+  return isActiveClientForSession(state, socket, clientId, sessionId);
+}
+
+export function getSessionIdForPty(state: ShimServerState, ptyId: string): string | null {
+  return state.ptySessions.get(ptyId) ?? state.ptyToPane.get(ptyId)?.sessionId ?? null;
+}
+
+export function hasActiveClientForPty(state: ShimServerState, ptyId: string): boolean {
+  const sessionId = getSessionIdForPty(state, ptyId);
+  return Boolean(sessionId && getActiveClientForSession(state, sessionId));
 }
 
 /**
@@ -125,7 +171,10 @@ export function rememberRevokedClientId(state: ShimServerState, clientId: string
 export function resetShimServerState(state: ShimServerState): void {
   state.sessionPanes.clear();
   state.ptyToPane.clear();
+  state.ptySessions.clear();
   state.clientIds.clear();
+  state.clientSessions.clear();
+  state.activeClientsBySession.clear();
   state.revokedClientIds.clear();
   state.revokedClientOrder.length = 0;
   state.ptySubscriptions.clear();
@@ -138,8 +187,6 @@ export function resetShimServerState(state: ShimServerState): void {
   state.lifecycleUnsub = null;
   state.titleUnsub = null;
   state.activityUnsub = null;
-  state.activeClient = null;
-  state.activeClientId = null;
   state.bootstrappingPtyIds.clear();
   state.hostColorsSet = false;
 }

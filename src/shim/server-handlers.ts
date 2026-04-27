@@ -65,8 +65,8 @@ export function createServerHandlers(state: ShimServerState, options?: ShimServe
     socketDir,
     handleRequest: createRequestHandler(context),
     detachClient: (socket: net.Socket) => detachClient(context, socket),
-    attachClient: (socket: net.Socket, clientId: string) =>
-      attachClient(context, { socket, clientId }),
+    attachClient: (socket: net.Socket, clientId: string, sessionId: string) =>
+      attachClient(context, { socket, clientId, sessionId }),
     context,
   };
 }

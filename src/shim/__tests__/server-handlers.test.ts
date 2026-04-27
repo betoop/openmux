@@ -28,6 +28,12 @@ describe('createServerHandlers detach behavior', () => {
   let state: ReturnType<typeof createShimServerState>;
   let handlers: ReturnType<typeof createServerHandlers>;
 
+  const activate = (socket: net.Socket) => {
+    state.clientIds.set(socket, 'client-1');
+    state.clientSessions.set(socket, 'session-1');
+    state.activeClientsBySession.set('session-1', { socket, clientId: 'client-1' });
+  };
+
   beforeEach(() => {
     state = createShimServerState();
     handlers = createServerHandlers(state, {
@@ -49,7 +55,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       // Setup subscriptions
       const unifiedUnsub = () => {};
@@ -80,7 +86,7 @@ describe('createServerHandlers detach behavior', () => {
 
       await handlers.detachClient(socket);
 
-      expect(state.activeClient).toBeNull();
+      expect(state.activeClientsBySession.size).toBe(0);
       expect(state.ptySubscriptions.size).toBe(0);
       expect(state.ptyEmulators.has('pty-1')).toBe(false);
 
@@ -97,7 +103,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       const mockImage = makeImageInfo(1);
 
@@ -126,7 +132,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       const transmitCache = new Map<string, string[]>();
       transmitCache.set('image-1', ['chunk1', 'chunk2']);
@@ -151,7 +157,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       const pendingTransmits = new Map<string, string[]>();
       pendingTransmits.set('image-2', ['chunk3', 'chunk4']);
@@ -176,7 +182,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       const invalidated = { all: false, keys: new Set<string>(['key-1', 'key-2']) };
       state.kittyTransmitInvalidated.set('pty-1', invalidated);
@@ -200,7 +206,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       // Setup PTY 1
       state.kittyImages.set('pty-1', {
@@ -231,7 +237,7 @@ describe('createServerHandlers detach behavior', () => {
         end: () => {},
         destroy: () => {},
       } as unknown as net.Socket;
-      state.activeClient = socket;
+      activate(socket);
 
       // Setup all kitty states
       state.kittyImages.set('pty-1', { main: new Map(), alt: new Map() });

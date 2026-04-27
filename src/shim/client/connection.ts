@@ -15,6 +15,10 @@ import {
 import { createFrameHandler, type FrameHandlerDeps } from './frame-handler';
 import { createSocketDataStream } from './socket-stream';
 import { ShimConnectionError } from '../../effect/errors';
+import {
+  getActiveSessionIdForShim,
+  onActiveSessionIdForShimChange,
+} from '../../effect/bridge/app-coordinator-bridge';
 
 const CLIENT_VERSION = 1;
 const CLIENT_ID = `client_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -36,6 +40,7 @@ let spawnAttempted = false;
 let shimPid: number | null = null;
 let detached = false;
 let socketDataStop: (() => void) | null = null;
+let attachedSessionId: string | null = null;
 
 const detachedSubscribers = new Set<() => void>();
 
@@ -105,6 +110,58 @@ const handleFrame = createFrameHandler({
   },
 } satisfies FrameHandlerDeps);
 
+async function sendHelloForSession(sessionId: string | null): Promise<void | ShimConnectionError> {
+  const params: Record<string, unknown> = { clientId: CLIENT_ID, version: CLIENT_VERSION };
+  if (sessionId) {
+    params.sessionId = sessionId;
+  }
+
+  const helloResult = await errore.tryAsync<
+    { header: ShimHeader; payloads: Buffer[] },
+    ShimConnectionError
+  >({
+    try: () => sendRequest('hello', params),
+    catch: (e) => {
+      if (e instanceof Error && e.message.toLowerCase().includes('detached')) {
+        socket?.destroy();
+        socket = null;
+        reader = null;
+        markDetached();
+      }
+      return new ShimConnectionError({ reason: `Hello request failed: ${e}` });
+    },
+  });
+  if (helloResult instanceof ShimConnectionError) return helloResult;
+
+  const helloData = helloResult.header.result as { pid?: number } | undefined;
+  if (helloData && typeof helloData.pid === 'number') {
+    shimPid = helloData.pid;
+  }
+  attachedSessionId = sessionId;
+}
+
+async function attachActiveSession(sessionId: string | null): Promise<void> {
+  if (!sessionId || detached) return;
+  if (!socket && !connecting) return;
+  if (attachedSessionId === sessionId && socket && !socket.destroyed) return;
+
+  const connectResult = await ensureConnected();
+  if (connectResult instanceof ShimConnectionError) {
+    console.warn('[shim-client] Failed to attach active session:', connectResult.message);
+    return;
+  }
+  if (attachedSessionId === sessionId) return;
+
+  const helloResult = await sendHelloForSession(sessionId);
+  if (helloResult instanceof ShimConnectionError) {
+    console.warn('[shim-client] Failed to attach active session:', helloResult.message);
+  }
+}
+
+onActiveSessionIdForShimChange((sessionId) => {
+  void attachActiveSession(sessionId);
+});
+
 /**
  * Connects to the shim server socket, creating directory if needed.
  * Sets up frame reader and event handlers.
@@ -150,27 +207,8 @@ async function connectSocket(): Promise<void | ShimConnectionError> {
   });
   if (connectResult instanceof ShimConnectionError) return connectResult;
 
-  const helloResult = await errore.tryAsync<
-    { header: ShimHeader; payloads: Buffer[] },
-    ShimConnectionError
-  >({
-    try: () => sendRequest('hello', { clientId: CLIENT_ID, version: CLIENT_VERSION }),
-    catch: (e) => {
-      if (e instanceof Error && e.message.toLowerCase().includes('detached')) {
-        socket?.destroy();
-        socket = null;
-        reader = null;
-        markDetached();
-      }
-      return new ShimConnectionError({ reason: `Hello request failed: ${e}` });
-    },
-  });
+  const helloResult = await sendHelloForSession(getActiveSessionIdForShim());
   if (helloResult instanceof ShimConnectionError) return helloResult;
-
-  const helloData = helloResult.header.result as { pid?: number } | undefined;
-  if (helloData && typeof helloData.pid === 'number') {
-    shimPid = helloData.pid;
-  }
 
   const colors = getHostColors();
   if (colors) {
@@ -351,6 +389,11 @@ export async function sendRequest(
 ): Promise<{ header: ShimHeader; payloads: Buffer[] }> {
   const connectResult = await ensureConnected();
   if (connectResult instanceof ShimConnectionError) throw connectResult;
+  const activeSessionId = getActiveSessionIdForShim();
+  if (method !== 'hello' && activeSessionId && attachedSessionId !== activeSessionId) {
+    const helloResult = await sendHelloForSession(activeSessionId);
+    if (helloResult instanceof ShimConnectionError) throw helloResult;
+  }
   const currentSocket = socket;
   if (!currentSocket || currentSocket.destroyed) {
     throw new ShimConnectionError({ reason: 'Shim socket not available' });
@@ -441,6 +484,7 @@ export async function waitForShim(): Promise<void | ShimConnectionError> {
 function markDetached(): void {
   if (detached) return;
   detached = true;
+  attachedSessionId = null;
   // Detach is a terminal protocol event for this client, so all in-flight work must fail.
   rejectPendingRequests(new ShimConnectionError({ reason: 'Shim client detached' }));
   for (const callback of detachedSubscribers) {
