@@ -5,7 +5,14 @@
 
 import type { Rectangle, WorkspaceId } from '../../types';
 import type { LayoutState, Workspaces } from './types';
-import { createWorkspace, updateWorkspace, recalculateLayout, syncPaneIdCounter, syncSplitIdCounter, generatePaneId } from './helpers';
+import {
+  createWorkspace,
+  updateWorkspace,
+  recalculateLayout,
+  syncPaneIdCounter,
+  syncSplitIdCounter,
+  generatePaneId,
+} from './helpers';
 
 /**
  * Handle SET_VIEWPORT action
@@ -16,7 +23,7 @@ export function handleSetViewport(state: LayoutState, viewport: Rectangle): Layo
   for (const [idStr, workspace] of Object.entries(state.workspaces)) {
     if (!workspace) continue;
     const id = Number(idStr) as WorkspaceId;
-    if (workspace.mainPane) {
+    if (workspace.mainPane || workspace.scratchPane) {
       newWorkspaces[id] = recalculateLayout(workspace, viewport, state.config);
     } else {
       newWorkspaces[id] = workspace;
@@ -65,7 +72,11 @@ export function handleSwitchWorkspace(state: LayoutState, workspaceId: Workspace
 
   // Check if existing workspace is empty and auto-create pane if enabled
   const existingWorkspace = state.workspaces[workspaceId];
-  if (state.config.autoCreatePaneOnEmptyWorkspace && existingWorkspace && !existingWorkspace.mainPane) {
+  if (
+    state.config.autoCreatePaneOnEmptyWorkspace &&
+    existingWorkspace &&
+    !existingWorkspace.mainPane
+  ) {
     const newPaneId = generatePaneId();
     const updatedWorkspace = {
       ...existingWorkspace,
@@ -138,7 +149,7 @@ export function handleLoadSession(
   for (const [idStr, workspace] of Object.entries(workspaces)) {
     if (!workspace) continue;
     const id = Number(idStr) as WorkspaceId;
-    if (workspace.mainPane) {
+    if (workspace.mainPane || workspace.scratchPane) {
       newWorkspaces[id] = recalculateLayout(workspace, state.viewport, state.config);
     } else {
       newWorkspaces[id] = workspace;

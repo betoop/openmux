@@ -6,7 +6,11 @@ import type { Direction, WorkspaceId } from '../../core/types';
 import type { useLayout } from '../LayoutContext';
 import type { KeyboardContextValue, KeyboardHandlerOptions } from './types';
 
-const LAYOUT_MODES_ARRAY: Array<'vertical' | 'horizontal' | 'stacked'> = ['vertical', 'horizontal', 'stacked'];
+const LAYOUT_MODES_ARRAY: Array<'vertical' | 'horizontal' | 'stacked'> = [
+  'vertical',
+  'horizontal',
+  'stacked',
+];
 
 function parseDirection(action: string, prefix: string): Direction | null {
   if (!action.startsWith(prefix)) return null;
@@ -78,6 +82,9 @@ export function handleNormalModeAction(
       return true;
     case 'pane.zoom':
       layout.toggleZoom();
+      return true;
+    case 'pane.scratch.toggle':
+      options.onToggleScratchPane ? options.onToggleScratchPane() : layout.toggleScratchPane();
       return true;
     case 'layout.cycle.prev':
       cycleLayout(layout, currentLayoutMode, 'prev');
@@ -211,6 +218,10 @@ export function handlePrefixModeAction(
       return true;
     case 'pane.zoom':
       layout.toggleZoom();
+      exitPrefix();
+      return true;
+    case 'pane.scratch.toggle':
+      options.onToggleScratchPane ? options.onToggleScratchPane() : layout.toggleScratchPane();
       exitPrefix();
       return true;
     case 'layout.cycle.prev':

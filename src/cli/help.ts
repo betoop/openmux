@@ -7,6 +7,7 @@ export type HelpTopic =
   | 'session.create'
   | 'pane'
   | 'pane.split'
+  | 'pane.scratch'
   | 'pane.send'
   | 'pane.capture';
 
@@ -124,6 +125,7 @@ const PANE_HELP = (version?: string): string[] => [
   '',
   'Usage:',
   '  openmux pane split --direction <vertical|horizontal> [--workspace <1-9>] [--pane <selector>]',
+  '  openmux pane scratch [--workspace <1-9>]',
   '  openmux pane send --text <text> [--workspace <1-9>] [--pane <selector>]',
   '  openmux pane capture [--lines <n>] [--format <text|ansi>] [--raw] [--workspace <1-9>] [--pane <selector>]',
   '',
@@ -147,6 +149,19 @@ const PANE_SPLIT_HELP = (version?: string): string[] => [
   '  --direction <vertical|horizontal>   Split orientation (required).',
   '  --workspace <1-9>                   Workspace to target.',
   '  --pane <selector>                   Pane selector (defaults to focused).',
+];
+
+const PANE_SCRATCH_HELP = (version?: string): string[] => [
+  formatHeader('pane.scratch', version),
+  '',
+  'Usage:',
+  '  openmux pane scratch [--workspace <1-9>]',
+  '',
+  'Description:',
+  '  Toggle the workspace scratch pane in the active UI.',
+  '',
+  'Options:',
+  '  --workspace <1-9>   Workspace to target.',
 ];
 
 const PANE_SEND_HELP = (version?: string): string[] => [
@@ -196,6 +211,7 @@ const HELP_TOPICS: Record<HelpTopic, (version?: string) => string[]> = {
   'session.create': SESSION_CREATE_HELP,
   pane: PANE_HELP,
   'pane.split': PANE_SPLIT_HELP,
+  'pane.scratch': PANE_SCRATCH_HELP,
   'pane.send': PANE_SEND_HELP,
   'pane.capture': PANE_CAPTURE_HELP,
 };

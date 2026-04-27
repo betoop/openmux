@@ -36,6 +36,9 @@ export function PaneContainer() {
   const layoutMode = createMemo(() => workspace().layoutMode);
   const isZoomed = createMemo(() => workspace().zoomed);
   const activeStackIndex = createMemo(() => workspace().activeStackIndex);
+  const scratchPane = createMemo(() =>
+    workspace().scratchVisible ? (workspace().scratchPane ?? null) : null
+  );
 
   const mainPanes = createMemo(() => {
     const panes: PaneData[] = [];
@@ -62,7 +65,11 @@ export function PaneContainer() {
   const resolvePaneById = (paneId: string) => {
     return (
       findPane(mainPane(), paneId) ??
-      stackPanes().reduce<PaneData | null>((found, node) => found ?? findPane(node, paneId), null)
+      stackPanes().reduce<PaneData | null>(
+        (found, node) => found ?? findPane(node, paneId),
+        null
+      ) ??
+      (scratchPane()?.id === paneId ? scratchPane() : null)
     );
   };
 
@@ -109,13 +116,14 @@ export function PaneContainer() {
   const showNoPanesMessage = () =>
     mainPanes().length === 0 &&
     stackPanes().length === 0 &&
+    !scratchPane() &&
     !session.state.switching &&
     !aggregateState.showAggregateView;
 
   return (
     <box style={{ flexGrow: 1, position: 'relative' }}>
       <Show
-        when={mainPanes().length > 0 || stackPanes().length > 0}
+        when={mainPanes().length > 0 || stackPanes().length > 0 || scratchPane()}
         fallback={
           <Show when={showNoPanesMessage()}>
             <box
@@ -193,6 +201,15 @@ export function PaneContainer() {
             onMouseInput={handleMouseInput}
           />
         </Show>
+      </Show>
+      <Show when={scratchPane()?.rectangle}>
+        <PaneRenderer
+          pane={scratchPane()!}
+          isFocused={focusedPaneId() === scratchPane()?.id}
+          isMain={false}
+          onFocus={handlePaneClick}
+          onMouseInput={handleMouseInput}
+        />
       </Show>
     </box>
   );

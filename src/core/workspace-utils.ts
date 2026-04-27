@@ -11,8 +11,12 @@ import { containsPane, findPane } from './layout-tree';
  * Returns null if no pane is focused or workspace has no panes
  */
 export function getFocusedPane(workspace: Workspace): PaneData | null {
-  const { focusedPaneId, mainPane, stackPanes } = workspace;
+  const { focusedPaneId, mainPane, stackPanes, scratchPane, scratchVisible } = workspace;
   if (!focusedPaneId) return null;
+
+  if (scratchVisible && scratchPane?.id === focusedPaneId) {
+    return scratchPane;
+  }
 
   if (mainPane) {
     const pane = findPane(mainPane, focusedPaneId);

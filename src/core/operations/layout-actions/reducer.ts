@@ -9,8 +9,22 @@ import { handleNavigate } from './navigate';
 import { handleNewPane } from './new-pane';
 import { handleSplitPane } from './split-pane';
 import { handleClosePane, handleClosePaneById } from './close-pane';
-import { handleSetViewport, handleSwitchWorkspace, handleSetWorkspaceLabel, handleLoadSession, handleClearAll } from './workspace-ops';
-import { handleSetLayoutMode, handleSetPanePty, handleSetPaneTitle, handleSwapMain, handleMovePane, handleToggleZoom } from './pane-ops';
+import {
+  handleSetViewport,
+  handleSwitchWorkspace,
+  handleSetWorkspaceLabel,
+  handleLoadSession,
+  handleClearAll,
+} from './workspace-ops';
+import {
+  handleSetLayoutMode,
+  handleSetPanePty,
+  handleSetPaneTitle,
+  handleSwapMain,
+  handleMovePane,
+  handleToggleZoom,
+} from './pane-ops';
+import { handleToggleScratchPane } from './scratch-pane';
 
 /**
  * Layout reducer - handles all layout-related actions
@@ -61,6 +75,9 @@ export function layoutReducer(state: LayoutState, action: LayoutAction): LayoutS
 
     case 'TOGGLE_ZOOM':
       return handleToggleZoom(state);
+
+    case 'TOGGLE_SCRATCH_PANE':
+      return handleToggleScratchPane(state);
 
     case 'LOAD_SESSION':
       return handleLoadSession(state, action.workspaces, action.activeWorkspaceId);

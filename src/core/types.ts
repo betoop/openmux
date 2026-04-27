@@ -41,6 +41,10 @@ export interface Workspace {
   label?: string;
   mainPane: LayoutNode | null;
   stackPanes: LayoutNode[];
+  /** Optional overlay pane that can be hidden without changing tiled layout */
+  scratchPane?: PaneData | null;
+  scratchVisible?: boolean;
+  scratchPreviousFocusedPaneId?: NodeId | null;
   focusedPaneId: NodeId | null;
   /** For stacked mode: which stack pane is visible */
   activeStackIndex: number;

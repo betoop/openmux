@@ -42,6 +42,28 @@ function updatePaneRectangle(pane: PaneData, newRect: Rectangle | undefined): Pa
   return { ...pane, rectangle: newRect ? { ...newRect } : undefined };
 }
 
+function calculateScratchRectangle(viewport: Rectangle): Rectangle {
+  const width = Math.min(viewport.width, Math.max(24, Math.floor(viewport.width * 0.8)));
+  const height = Math.min(viewport.height, Math.max(8, Math.floor(viewport.height * 0.7)));
+
+  return {
+    x: viewport.x + Math.floor((viewport.width - width) / 2),
+    y: viewport.y + Math.floor((viewport.height - height) / 2),
+    width,
+    height,
+  };
+}
+
+function updateScratchPaneRectangle(workspace: Workspace, viewport: Rectangle): Workspace {
+  if (!workspace.scratchPane) return workspace;
+
+  const rect = workspace.scratchVisible ? calculateScratchRectangle(viewport) : undefined;
+  const scratchPane = updatePaneRectangle(workspace.scratchPane, rect);
+  if (scratchPane === workspace.scratchPane) return workspace;
+
+  return { ...workspace, scratchPane };
+}
+
 /**
  * Recalculate rectangles while preserving structural sharing.
  *
@@ -181,7 +203,6 @@ export function calculateMasterStackLayout(
   viewport: Rectangle,
   config: LayoutConfig
 ): Workspace {
-  const { mainPane, stackPanes, layoutMode, zoomed, focusedPaneId } = workspace;
   const padding = config.outerPadding;
   const paddedViewport: Rectangle = {
     x: viewport.x + padding.left,
@@ -190,10 +211,12 @@ export function calculateMasterStackLayout(
     height: Math.max(1, viewport.height - padding.top - padding.bottom),
   };
   const gap = config.windowGap;
+  const workspaceWithScratch = updateScratchPaneRectangle(workspace, paddedViewport);
+  const { mainPane, stackPanes, layoutMode, zoomed, focusedPaneId } = workspaceWithScratch;
 
   // No panes - nothing to calculate
   if (!mainPane) {
-    return workspace;
+    return workspaceWithScratch;
   }
 
   // Zoomed mode - focused pane takes full viewport
@@ -208,9 +231,9 @@ export function calculateMasterStackLayout(
       const updatedMain = updateLayoutNodeForZoom(mainPane, focusedPaneId, paddedViewport, gap);
       const updatedStack = stackPanes.map((p) => updateLayoutNodeRectangles(p, undefined, gap));
       if (updatedMain === mainPane && updatedStack.every((p, i) => p === stackPanes[i])) {
-        return workspace;
+        return workspaceWithScratch;
       }
-      return { ...workspace, mainPane: updatedMain, stackPanes: updatedStack };
+      return { ...workspaceWithScratch, mainPane: updatedMain, stackPanes: updatedStack };
     }
 
     if (focusedStackIndex >= 0) {
@@ -222,17 +245,17 @@ export function calculateMasterStackLayout(
           : updateLayoutNodeRectangles(p, undefined, gap)
       );
       if (updatedMain === mainPane && updatedStack.every((p, i) => p === stackPanes[i])) {
-        return workspace;
+        return workspaceWithScratch;
       }
-      return { ...workspace, mainPane: updatedMain, stackPanes: updatedStack };
+      return { ...workspaceWithScratch, mainPane: updatedMain, stackPanes: updatedStack };
     }
   }
 
   // Single pane - takes full viewport
   if (stackPanes.length === 0) {
     const updatedMain = updateLayoutNodeRectangles(mainPane, paddedViewport, gap);
-    if (updatedMain === mainPane) return workspace;
-    return { ...workspace, mainPane: updatedMain };
+    if (updatedMain === mainPane) return workspaceWithScratch;
+    return { ...workspaceWithScratch, mainPane: updatedMain };
   }
 
   // Multiple panes - split based on layout mode
@@ -294,11 +317,11 @@ export function calculateMasterStackLayout(
   // Only create new workspace if something changed
   const stackChanged = updatedStackPanes.some((p, i) => p !== stackPanes[i]);
   if (updatedMain === mainPane && !stackChanged) {
-    return workspace;
+    return workspaceWithScratch;
   }
 
   return {
-    ...workspace,
+    ...workspaceWithScratch,
     mainPane: updatedMain,
     stackPanes: stackChanged ? updatedStackPanes : stackPanes,
   };
@@ -381,6 +404,9 @@ export function getAllWorkspacePanes(workspace: Workspace): PaneData[] {
   }
   for (const pane of workspace.stackPanes) {
     collectPanes(pane, panes);
+  }
+  if (workspace.scratchVisible && workspace.scratchPane) {
+    panes.push(workspace.scratchPane);
   }
   return panes;
 }

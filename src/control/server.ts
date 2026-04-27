@@ -33,6 +33,7 @@ export type ControlServerDeps = {
   focusPane: (paneId: string) => void;
   closePaneById: (paneId: string) => void;
   splitPane: (direction: 'horizontal' | 'vertical') => void;
+  toggleScratchPane: () => void;
   setLayoutMode: (mode: LayoutMode) => void;
   setWorkspaceLabel: (workspaceId: WorkspaceId, label?: string) => void;
   writeToPty: (ptyId: string, data: string) => void;
@@ -108,6 +109,9 @@ function collectWorkspacePanes(workspace: Workspace): PaneData[] {
   for (const node of workspace.stackPanes) {
     collectPanes(node, panes);
   }
+  if (workspace.scratchVisible && workspace.scratchPane) {
+    panes.push(workspace.scratchPane);
+  }
   return panes;
 }
 
@@ -125,6 +129,7 @@ function serializePane(
     cwd: pane.cwd ?? null,
     workspaceId,
     focused: pane.id === workspace.focusedPaneId,
+    scratch: pane.id === workspace.scratchPane?.id,
     activeWorkspace: workspaceId === activeWorkspaceId,
     activePty: pane.ptyId ? (isPtyActive?.(pane.ptyId) ?? true) : false,
   };
@@ -457,6 +462,27 @@ async function handlePaneSplit(
   sendResponse(requestId, { ok: true });
 }
 
+async function handlePaneScratchToggle(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const workspaceId = parseWorkspaceId(params.workspaceId);
+  if (params.workspaceId !== undefined && !workspaceId) {
+    sendError(requestId, 'Invalid workspace id; use 1-9.', 'invalid_request');
+    return;
+  }
+
+  if (workspaceId && deps.getActiveWorkspace().id !== workspaceId) {
+    deps.switchWorkspace(workspaceId);
+  }
+
+  deps.toggleScratchPane();
+  sendResponse(requestId, { ok: true });
+}
+
 async function handlePaneSend(
   requestId: number,
   params: Record<string, unknown>,
@@ -677,6 +703,9 @@ export async function startControlServer(deps: ControlServerDeps): Promise<Contr
               return;
             case 'pane.split':
               await handlePaneSplit(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'pane.scratch.toggle':
+              await handlePaneScratchToggle(requestId, params, deps, sendResponse, sendError);
               return;
             case 'pane.send':
               await handlePaneSend(requestId, params, deps, sendResponse, sendError);

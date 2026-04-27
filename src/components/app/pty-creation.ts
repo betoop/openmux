@@ -16,6 +16,8 @@ type PaneRectangle = { width: number; height: number };
 type LayoutAccess = {
   panes: Array<{ id: string; ptyId?: string; rectangle?: PaneRectangle | null }>;
   getFocusedPaneId?: () => string | null | undefined;
+  getScratchVisible?: () => boolean;
+  getScratchPtyId?: () => string | undefined;
 };
 
 type TerminalAccess = {
@@ -63,7 +65,12 @@ export function usePtyCreation(params: {
   sessionState: SessionStateLike;
   newPane: (kind?: string) => void;
   splitPane: (direction: 'horizontal' | 'vertical') => void;
-}): { handleNewPane: () => void; handleSplitPane: (direction: 'horizontal' | 'vertical') => void } {
+  toggleScratchPane: () => void;
+}): {
+  handleNewPane: () => void;
+  handleSplitPane: (direction: 'horizontal' | 'vertical') => void;
+  handleToggleScratchPane: () => void;
+} {
   // Ref for passing CWD to effect (avoids closure issues)
   let pendingCwdRef: string | null = null;
   let pendingCwdPromise: Promise<string | null> | null = null;
@@ -88,6 +95,13 @@ export function usePtyCreation(params: {
   const handleSplitPane = (direction: 'horizontal' | 'vertical') => {
     queueFocusedCwd();
     params.splitPane(direction);
+  };
+
+  const handleToggleScratchPane = () => {
+    if (!params.layout.getScratchVisible?.() && !params.layout.getScratchPtyId?.()) {
+      queueFocusedCwd();
+    }
+    params.toggleScratchPane();
   };
 
   // Retry counter to trigger effect re-run when PTY creation fails
@@ -205,5 +219,5 @@ export function usePtyCreation(params: {
     )
   );
 
-  return { handleNewPane, handleSplitPane };
+  return { handleNewPane, handleSplitPane, handleToggleScratchPane };
 }
