@@ -199,6 +199,7 @@ export function buildLayoutFromTemplate(template: TemplateSession): {
     const layoutMode = templateWorkspace?.layoutMode ?? template.defaults.layoutMode;
 
     const workspace: Workspace = createWorkspace(workspaceId, layoutMode);
+    workspace.label = templateWorkspace?.label;
     const paneDefaultsCwd = template.defaults.cwd ?? process.cwd();
     const templateLayout = templateWorkspace?.layout;
     if (templateLayout && (templateLayout.main !== null || templateLayout.stack.length > 0)) {

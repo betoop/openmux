@@ -188,6 +188,7 @@ export type TemplateWorkspaceLayout = z.infer<typeof TemplateWorkspaceLayoutSche
 /** Template workspace definition */
 export const TemplateWorkspaceSchema = z.object({
   id: WorkspaceIdSchema,
+  label: z.string().optional(),
   layoutMode: LayoutModeSchema,
   panes: z.array(TemplatePaneDataSchema).optional(),
   layout: TemplateWorkspaceLayoutSchema.optional(),
@@ -244,6 +245,7 @@ export function createTemplateWorkspace(
 ): TemplateWorkspace {
   return {
     id: data.id ?? (1 as WorkspaceId),
+    label: data.label,
     layoutMode: data.layoutMode,
     panes: data.panes,
     layout: data.layout,

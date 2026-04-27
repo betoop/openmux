@@ -22,6 +22,10 @@ import {
 } from '../effect/models';
 import { buildLayoutFromTemplate } from '../effect/bridge';
 
+export type LayoutSnapshot = TemplateSession & {
+  activeWorkspaceId?: WorkspaceId;
+};
+
 export function isLayoutEmpty(workspaces: Workspaces): boolean {
   return Object.values(workspaces).every(
     (workspace) => !workspace || (!workspace.mainPane && workspace.stackPanes.length === 0)
@@ -230,6 +234,7 @@ export async function buildTemplateFromWorkspaces(params: {
     templateWorkspaces.push(
       createTemplateWorkspace({
         id: workspaceId,
+        label: workspace.label,
         layoutMode: workspace.layoutMode,
         panes,
         layout: createTemplateWorkspaceLayout({
@@ -260,8 +265,9 @@ export async function buildTemplateFromWorkspaces(params: {
 }
 
 export async function applyTemplateToSession(params: {
-  template: TemplateSession;
+  template: TemplateSession | LayoutSnapshot;
   activeSessionId: string | null;
+  activeWorkspaceId?: WorkspaceId;
   resetLayoutForTemplate: () => Promise<void>;
   onSessionLoad: (
     workspaces: Workspaces,
@@ -276,9 +282,16 @@ export async function applyTemplateToSession(params: {
 
   await params.resetLayoutForTemplate();
   const layout = buildLayoutFromTemplate(params.template);
+  const requestedActiveWorkspaceId =
+    params.activeWorkspaceId ??
+    ('activeWorkspaceId' in params.template ? params.template.activeWorkspaceId : undefined);
+  const activeWorkspaceId =
+    requestedActiveWorkspaceId && layout.workspaces[requestedActiveWorkspaceId]
+      ? requestedActiveWorkspaceId
+      : layout.activeWorkspaceId;
   await params.onSessionLoad(
     layout.workspaces,
-    layout.activeWorkspaceId,
+    activeWorkspaceId,
     layout.cwdMap,
     layout.commandMap,
     params.activeSessionId,

@@ -14,6 +14,7 @@ import type { LayoutState } from '../core/operations/layout-actions';
 import type { ITerminalEmulator } from '../terminal/emulator-interface';
 import type { SessionMetadata } from '../core/types';
 import { SessionStorageError } from '../effect/errors';
+import { TemplateSessionSchema, type TemplateSession } from '../effect/models';
 import { collectPanes } from '../core/layout-tree';
 import {
   CONTROL_PROTOCOL_VERSION,
@@ -54,6 +55,12 @@ export type ControlServerDeps = {
   listSessions: () => SessionMetadata[];
   switchSession: (sessionId: string) => Promise<void>;
   getActiveSessionId: () => string | null | undefined;
+  exportLayoutSnapshot?: (name?: string) => Promise<ControlLayoutSnapshot | null>;
+  importLayoutSnapshot?: (snapshot: ControlLayoutSnapshot) => Promise<void>;
+};
+
+export type ControlLayoutSnapshot = TemplateSession & {
+  activeWorkspaceId?: WorkspaceId;
 };
 
 export type ControlServer = {
@@ -98,6 +105,42 @@ function parseLayoutMode(value: unknown): LayoutMode | null {
 function getNumberParam(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseLayoutSnapshot(
+  value: unknown,
+  activeWorkspaceOverride?: unknown
+): { ok: true; snapshot: ControlLayoutSnapshot } | { ok: false; message: string } {
+  if (!isRecord(value)) {
+    return { ok: false, message: 'Missing layout snapshot.' };
+  }
+
+  const parsed = TemplateSessionSchema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return {
+      ok: false,
+      message: `Invalid layout snapshot${issue ? `: ${issue.message}` : '.'}`,
+    };
+  }
+
+  const activeWorkspaceValue = activeWorkspaceOverride ?? value.activeWorkspaceId;
+  const activeWorkspaceId = parseWorkspaceId(activeWorkspaceValue);
+  if (activeWorkspaceValue !== undefined && !activeWorkspaceId) {
+    return { ok: false, message: 'Invalid active workspace id; use 1-9.' };
+  }
+
+  return {
+    ok: true,
+    snapshot: {
+      ...parsed.data,
+      activeWorkspaceId,
+    },
+  };
 }
 
 function collectWorkspacePanes(workspace: Workspace): PaneData[] {
@@ -409,6 +452,56 @@ async function handleLayoutSetMode(
   sendResponse(requestId, { workspaceId: workspaceId ?? deps.getActiveWorkspace().id, mode });
 }
 
+async function handleLayoutExport(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  if (!deps.exportLayoutSnapshot) {
+    sendError(requestId, 'Layout snapshots are not available.', 'internal');
+    return;
+  }
+
+  const name = typeof params.name === 'string' ? params.name : undefined;
+  const snapshot = await deps.exportLayoutSnapshot(name);
+  if (!snapshot) {
+    sendError(requestId, 'No panes to export.', 'not_found');
+    return;
+  }
+
+  sendResponse(requestId, { snapshot });
+}
+
+async function handleLayoutImport(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  if (!deps.importLayoutSnapshot) {
+    sendError(requestId, 'Layout snapshots are not available.', 'internal');
+    return;
+  }
+
+  const snapshotInput =
+    params.snapshot ?? params.layout ?? (params.version !== undefined ? params : undefined);
+  const parsed = parseLayoutSnapshot(snapshotInput, params.activeWorkspaceId);
+  if (!parsed.ok) {
+    sendError(requestId, parsed.message, 'invalid_request');
+    return;
+  }
+
+  await deps.importLayoutSnapshot(parsed.snapshot);
+  sendResponse(requestId, {
+    ok: true,
+    activeWorkspaceId: parsed.snapshot.activeWorkspaceId ?? null,
+    workspaceCount: parsed.snapshot.workspaces.length,
+  });
+}
+
 async function handlePaneSplit(
   requestId: number,
   params: Record<string, unknown>,
@@ -686,6 +779,12 @@ export async function startControlServer(deps: ControlServerDeps): Promise<Contr
               return;
             case 'layout.setMode':
               await handleLayoutSetMode(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'layout.export':
+              await handleLayoutExport(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'layout.import':
+              await handleLayoutImport(requestId, params, deps, sendResponse, sendError);
               return;
             default:
               sendError(requestId, `Unknown method: ${method}`, 'invalid_request');
