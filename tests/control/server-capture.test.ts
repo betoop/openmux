@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "bun:test";
+import { describe, expect, test, vi } from 'bun:test';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -20,19 +20,21 @@ function makeState(line: string): TerminalState {
   return {
     cols: line.length,
     rows: 1,
-    cells: [line.split('').map((char) => ({
-      char,
-      fg: { r: 255, g: 255, b: 255 },
-      bg: { r: 0, g: 0, b: 0 },
-      bold: false,
-      italic: false,
-      underline: false,
-      strikethrough: false,
-      inverse: false,
-      blink: false,
-      dim: false,
-      width: 1,
-    }))],
+    cells: [
+      line.split('').map((char) => ({
+        char,
+        fg: { r: 255, g: 255, b: 255 },
+        bg: { r: 0, g: 0, b: 0 },
+        bold: false,
+        italic: false,
+        underline: false,
+        strikethrough: false,
+        inverse: false,
+        blink: false,
+        dim: false,
+        width: 1,
+      })),
+    ],
     cursor: { x: 0, y: 0, visible: true },
     alternateScreen: false,
     mouseTracking: false,
@@ -109,7 +111,10 @@ describe('control capture', () => {
       getActiveWorkspace: () => workspace,
       switchWorkspace: () => {},
       focusPane: () => {},
+      closePaneById: () => {},
       splitPane: () => {},
+      setLayoutMode: () => {},
+      setWorkspaceLabel: () => {},
       writeToPty: () => {},
       getEmulator: () => emulator,
       capturePty: async () => null,
@@ -127,6 +132,16 @@ describe('control capture', () => {
         lastSwitchedAt: Date.now(),
         autoNamed: false,
       }),
+      listSessions: () => [
+        {
+          id: 'session-1',
+          name: 'test',
+          createdAt: 1,
+          lastSwitchedAt: 2,
+          autoNamed: false,
+        },
+      ],
+      switchSession: async () => {},
       getActiveSessionId: () => 'session-1',
     });
 
@@ -135,7 +150,11 @@ describe('control capture', () => {
       timeoutMs: 500,
     });
 
-    const response = await client.request('pane.capture', { lines: 1, format: 'text', pane: 'focused' });
+    const response = await client.request('pane.capture', {
+      lines: 1,
+      format: 'text',
+      pane: 'focused',
+    });
     const result = response.header.result as { text?: string } | undefined;
 
     expect(result?.text).toBe('hello');
@@ -174,7 +193,10 @@ describe('control capture', () => {
       getActiveWorkspace: () => workspace,
       switchWorkspace: () => {},
       focusPane: () => {},
+      closePaneById: () => {},
       splitPane: () => {},
+      setLayoutMode: () => {},
+      setWorkspaceLabel: () => {},
       writeToPty: () => {},
       getEmulator: () => null,
       capturePty: async (_ptyId, options) => {
@@ -191,6 +213,16 @@ describe('control capture', () => {
         lastSwitchedAt: Date.now(),
         autoNamed: false,
       }),
+      listSessions: () => [
+        {
+          id: 'session-1',
+          name: 'test',
+          createdAt: 1,
+          lastSwitchedAt: 2,
+          autoNamed: false,
+        },
+      ],
+      switchSession: async () => {},
       getActiveSessionId: () => 'session-1',
     });
 
@@ -199,7 +231,12 @@ describe('control capture', () => {
       timeoutMs: 500,
     });
 
-    const response = await client.request('pane.capture', { lines: 10, format: 'text', raw: true, pane: 'focused' });
+    const response = await client.request('pane.capture', {
+      lines: 10,
+      format: 'text',
+      raw: true,
+      pane: 'focused',
+    });
     const result = response.header.result as { text?: string } | undefined;
 
     expect(result?.text).toBe('direct-capture');
