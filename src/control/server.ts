@@ -2,12 +2,27 @@ import net from 'net';
 import fs from 'fs/promises';
 import * as errore from 'errore';
 
-import type { TerminalScrollState, TerminalState, Workspace, WorkspaceId } from '../core/types';
+import type {
+  LayoutMode,
+  PaneData,
+  TerminalScrollState,
+  TerminalState,
+  Workspace,
+  WorkspaceId,
+} from '../core/types';
 import type { LayoutState } from '../core/operations/layout-actions';
 import type { ITerminalEmulator } from '../terminal/emulator-interface';
 import type { SessionMetadata } from '../core/types';
 import { SessionStorageError } from '../effect/errors';
-import { CONTROL_PROTOCOL_VERSION, CONTROL_SOCKET_DIR, CONTROL_SOCKET_PATH, encodeFrame, FrameReader, type ControlHeader } from './protocol';
+import { collectPanes } from '../core/layout-tree';
+import {
+  CONTROL_PROTOCOL_VERSION,
+  CONTROL_SOCKET_DIR,
+  CONTROL_SOCKET_PATH,
+  encodeFrame,
+  FrameReader,
+  type ControlHeader,
+} from './protocol';
 import { parsePaneSelector, resolvePaneSelector } from './targets';
 import { captureEmulator, type CaptureFormat } from './capture';
 
@@ -16,14 +31,28 @@ export type ControlServerDeps = {
   getActiveWorkspace: () => Workspace;
   switchWorkspace: (workspaceId: WorkspaceId) => void;
   focusPane: (paneId: string) => void;
+  closePaneById: (paneId: string) => void;
   splitPane: (direction: 'horizontal' | 'vertical') => void;
+  setLayoutMode: (mode: LayoutMode) => void;
+  setWorkspaceLabel: (workspaceId: WorkspaceId, label?: string) => void;
   writeToPty: (ptyId: string, data: string) => void;
   getEmulator: (ptyId: string) => ITerminalEmulator | null;
-  fetchTerminalState: (ptyId: string, options?: { force?: boolean }) => Promise<TerminalState | null>;
-  fetchScrollState: (ptyId: string, options?: { force?: boolean }) => Promise<TerminalScrollState | null>;
-  capturePty?: (ptyId: string, options: { lines: number; format: CaptureFormat; raw?: boolean }) => Promise<string | null>;
+  fetchTerminalState: (
+    ptyId: string,
+    options?: { force?: boolean }
+  ) => Promise<TerminalState | null>;
+  fetchScrollState: (
+    ptyId: string,
+    options?: { force?: boolean }
+  ) => Promise<TerminalScrollState | null>;
+  capturePty?: (
+    ptyId: string,
+    options: { lines: number; format: CaptureFormat; raw?: boolean }
+  ) => Promise<string | null>;
   isPtyActive: (ptyId: string) => boolean;
   createSession: (name?: string) => Promise<SessionMetadata | SessionStorageError>;
+  listSessions: () => SessionMetadata[];
+  switchSession: (sessionId: string) => Promise<void>;
   getActiveSessionId: () => string | null | undefined;
 };
 
@@ -32,7 +61,12 @@ export type ControlServer = {
   socketPath: string;
 };
 
-type ControlErrorCode = 'invalid_request' | 'not_found' | 'ambiguous' | 'internal' | 'session_creation_failed';
+type ControlErrorCode =
+  | 'invalid_request'
+  | 'not_found'
+  | 'ambiguous'
+  | 'internal'
+  | 'session_creation_failed';
 
 /** Error processing control request */
 export class ControlRequestError extends errore.createTaggedError({
@@ -43,8 +77,9 @@ export class ControlRequestError extends errore.createTaggedError({
 }
 
 function parseWorkspaceId(value: unknown): WorkspaceId | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  const intValue = Math.floor(value);
+  const numeric = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric)) return undefined;
+  const intValue = Math.floor(numeric);
   if (intValue < 1 || intValue > 9) return undefined;
   return intValue as WorkspaceId;
 }
@@ -55,9 +90,60 @@ function parseCaptureFormat(value: unknown): CaptureFormat | null {
   return null;
 }
 
+function parseLayoutMode(value: unknown): LayoutMode | null {
+  if (value === 'vertical' || value === 'horizontal' || value === 'stacked') return value;
+  return null;
+}
+
 function getNumberParam(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return value;
+}
+
+function collectWorkspacePanes(workspace: Workspace): PaneData[] {
+  const panes: PaneData[] = [];
+  if (workspace.mainPane) {
+    collectPanes(workspace.mainPane, panes);
+  }
+  for (const node of workspace.stackPanes) {
+    collectPanes(node, panes);
+  }
+  return panes;
+}
+
+function serializePane(
+  pane: PaneData,
+  workspace: Workspace,
+  workspaceId: WorkspaceId,
+  activeWorkspaceId: WorkspaceId,
+  isPtyActive?: (ptyId: string) => boolean
+) {
+  return {
+    id: pane.id,
+    ptyId: pane.ptyId ?? null,
+    title: pane.title ?? null,
+    cwd: pane.cwd ?? null,
+    workspaceId,
+    focused: pane.id === workspace.focusedPaneId,
+    activeWorkspace: workspaceId === activeWorkspaceId,
+    activePty: pane.ptyId ? (isPtyActive?.(pane.ptyId) ?? true) : false,
+  };
+}
+
+function serializeWorkspace(workspace: Workspace, activeWorkspaceId: WorkspaceId) {
+  return {
+    id: workspace.id,
+    label: workspace.label ?? null,
+    active: workspace.id === activeWorkspaceId,
+    paneCount: collectWorkspacePanes(workspace).length,
+    focusedPaneId: workspace.focusedPaneId,
+    layoutMode: workspace.layoutMode,
+    zoomed: workspace.zoomed,
+  };
+}
+
+function getWorkspace(layoutState: LayoutState, workspaceId: WorkspaceId): Workspace | null {
+  return layoutState.workspaces[workspaceId] ?? null;
 }
 
 async function handleHello(
@@ -86,6 +172,241 @@ async function handleSessionCreate(
     return;
   }
   sendResponse(requestId, { session: result });
+}
+
+async function handleSessionList(
+  requestId: number,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void
+): Promise<void> {
+  const activeSessionId = deps.getActiveSessionId() ?? null;
+  sendResponse(requestId, {
+    activeSessionId,
+    sessions: deps.listSessions().map((session) => ({
+      ...session,
+      active: session.id === activeSessionId,
+    })),
+  });
+}
+
+async function handleSessionSwitch(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const id = typeof params.id === 'string' ? params.id.trim() : '';
+  const name = typeof params.name === 'string' ? params.name.trim() : '';
+  if (!id && !name) {
+    sendError(requestId, 'Missing session id or name.', 'invalid_request');
+    return;
+  }
+
+  const session = deps
+    .listSessions()
+    .find((candidate) => (id ? candidate.id === id : candidate.name === name));
+  if (!session) {
+    sendError(requestId, 'Session not found.', 'not_found');
+    return;
+  }
+
+  await deps.switchSession(session.id);
+  sendResponse(requestId, { session, activeSessionId: session.id });
+}
+
+async function handleWorkspaceList(
+  requestId: number,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void
+): Promise<void> {
+  const layoutState = deps.getLayoutState();
+  const activeWorkspaceId = layoutState.activeWorkspaceId;
+  const workspaces = Object.values(layoutState.workspaces)
+    .filter((workspace): workspace is Workspace => Boolean(workspace))
+    .sort((a, b) => a.id - b.id)
+    .map((workspace) => serializeWorkspace(workspace, activeWorkspaceId));
+
+  sendResponse(requestId, { activeWorkspaceId, workspaces });
+}
+
+async function handleWorkspaceSwitch(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const workspaceId = parseWorkspaceId(params.workspaceId ?? params.id);
+  if (!workspaceId) {
+    sendError(requestId, 'Invalid workspace id; use 1-9.', 'invalid_request');
+    return;
+  }
+
+  deps.switchWorkspace(workspaceId);
+  sendResponse(requestId, { workspaceId });
+}
+
+async function handleWorkspaceRename(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const workspaceId = parseWorkspaceId(params.workspaceId ?? params.id);
+  if (!workspaceId) {
+    sendError(requestId, 'Invalid workspace id; use 1-9.', 'invalid_request');
+    return;
+  }
+
+  const label = typeof params.label === 'string' ? params.label : undefined;
+  deps.setWorkspaceLabel(workspaceId, label);
+  sendResponse(requestId, { workspaceId, label: label?.trim() || null });
+}
+
+async function handlePaneList(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const layoutState = deps.getLayoutState();
+  const activeWorkspaceId = layoutState.activeWorkspaceId;
+  const workspaceId = parseWorkspaceId(params.workspaceId);
+  if (params.workspaceId !== undefined && !workspaceId) {
+    sendError(requestId, 'Invalid workspace id; use 1-9.', 'invalid_request');
+    return;
+  }
+
+  const workspaces = workspaceId
+    ? [getWorkspace(layoutState, workspaceId)].filter((workspace): workspace is Workspace =>
+        Boolean(workspace)
+      )
+    : params.all === true
+      ? Object.values(layoutState.workspaces).filter((workspace): workspace is Workspace =>
+          Boolean(workspace)
+        )
+      : [deps.getActiveWorkspace()];
+
+  if (workspaces.length === 0) {
+    sendError(requestId, 'Workspace not found.', 'not_found');
+    return;
+  }
+
+  const panes = workspaces.flatMap((workspace) =>
+    collectWorkspacePanes(workspace).map((pane) =>
+      serializePane(pane, workspace, workspace.id, activeWorkspaceId, deps.isPtyActive)
+    )
+  );
+  sendResponse(requestId, { panes });
+}
+
+async function handlePaneFocus(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const selectorParse = parsePaneSelector(
+    typeof params.pane === 'string' ? params.pane : undefined
+  );
+  if (!selectorParse.ok) {
+    sendError(requestId, selectorParse.error, 'invalid_request');
+    return;
+  }
+
+  const workspaceId = parseWorkspaceId(params.workspaceId);
+  const layoutState = deps.getLayoutState();
+  const activeWorkspace = deps.getActiveWorkspace();
+  const resolved = resolvePaneSelector({
+    selector: selectorParse.selector,
+    layoutState,
+    activeWorkspace,
+    workspaceId,
+  });
+
+  if (!resolved.ok) {
+    sendError(requestId, resolved.message, resolved.errorCode);
+    return;
+  }
+
+  if (activeWorkspace.id !== resolved.workspaceId) {
+    deps.switchWorkspace(resolved.workspaceId);
+  }
+  deps.focusPane(resolved.pane.id);
+  sendResponse(requestId, {
+    pane: serializePane(
+      resolved.pane,
+      layoutState.workspaces[resolved.workspaceId] ?? activeWorkspace,
+      resolved.workspaceId,
+      resolved.workspaceId,
+      deps.isPtyActive
+    ),
+  });
+}
+
+async function handlePaneClose(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const selectorParse = parsePaneSelector(
+    typeof params.pane === 'string' ? params.pane : undefined
+  );
+  if (!selectorParse.ok) {
+    sendError(requestId, selectorParse.error, 'invalid_request');
+    return;
+  }
+
+  const workspaceId = parseWorkspaceId(params.workspaceId);
+  const resolved = resolvePaneSelector({
+    selector: selectorParse.selector,
+    layoutState: deps.getLayoutState(),
+    activeWorkspace: deps.getActiveWorkspace(),
+    workspaceId,
+  });
+  if (!resolved.ok) {
+    sendError(requestId, resolved.message, resolved.errorCode);
+    return;
+  }
+
+  deps.closePaneById(resolved.pane.id);
+  sendResponse(requestId, { paneId: resolved.pane.id, workspaceId: resolved.workspaceId });
+}
+
+async function handleLayoutSetMode(
+  requestId: number,
+  params: Record<string, unknown>,
+  deps: ControlServerDeps,
+  sendResponse: (requestId: number, result?: unknown) => void,
+  sendError: (requestId: number, message: string, code: ControlErrorCode) => void
+): Promise<void> {
+  const mode = parseLayoutMode(params.mode);
+  if (!mode) {
+    sendError(
+      requestId,
+      'Invalid layout mode; use vertical, horizontal, or stacked.',
+      'invalid_request'
+    );
+    return;
+  }
+
+  const workspaceId = parseWorkspaceId(params.workspaceId);
+  if (params.workspaceId !== undefined && !workspaceId) {
+    sendError(requestId, 'Invalid workspace id; use 1-9.', 'invalid_request');
+    return;
+  }
+
+  if (workspaceId && deps.getActiveWorkspace().id !== workspaceId) {
+    deps.switchWorkspace(workspaceId);
+  }
+  deps.setLayoutMode(mode);
+  sendResponse(requestId, { workspaceId: workspaceId ?? deps.getActiveWorkspace().id, mode });
 }
 
 async function handlePaneSplit(
@@ -270,8 +591,9 @@ async function handlePaneCapture(
     const end = Math.min(scrollbackLength, start + lines);
     const count = Math.max(0, end - start);
     if (count > 0) {
-      await (emulator as { prefetchScrollbackLines: (offset: number, count: number) => Promise<void> })
-        .prefetchScrollbackLines(start, count);
+      await (
+        emulator as { prefetchScrollbackLines: (offset: number, count: number) => Promise<void> }
+      ).prefetchScrollbackLines(start, count);
     }
   }
 
@@ -329,6 +651,30 @@ export async function startControlServer(deps: ControlServerDeps): Promise<Contr
             case 'session.create':
               await handleSessionCreate(requestId, params, deps, sendResponse, sendError);
               return;
+            case 'session.list':
+              await handleSessionList(requestId, deps, sendResponse);
+              return;
+            case 'session.switch':
+              await handleSessionSwitch(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'workspace.list':
+              await handleWorkspaceList(requestId, deps, sendResponse);
+              return;
+            case 'workspace.switch':
+              await handleWorkspaceSwitch(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'workspace.rename':
+              await handleWorkspaceRename(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'pane.list':
+              await handlePaneList(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'pane.focus':
+              await handlePaneFocus(requestId, params, deps, sendResponse, sendError);
+              return;
+            case 'pane.close':
+              await handlePaneClose(requestId, params, deps, sendResponse, sendError);
+              return;
             case 'pane.split':
               await handlePaneSplit(requestId, params, deps, sendResponse, sendError);
               return;
@@ -338,11 +684,18 @@ export async function startControlServer(deps: ControlServerDeps): Promise<Contr
             case 'pane.capture':
               await handlePaneCapture(requestId, params, deps, sendResponse, sendError);
               return;
+            case 'layout.setMode':
+              await handleLayoutSetMode(requestId, params, deps, sendResponse, sendError);
+              return;
             default:
               sendError(requestId, `Unknown method: ${method}`, 'invalid_request');
           }
         },
-        catch: (e: unknown) => new ControlRequestError({ reason: e instanceof Error ? e.message : 'Request failed', cause: e }),
+        catch: (e: unknown) =>
+          new ControlRequestError({
+            reason: e instanceof Error ? e.message : 'Request failed',
+            cause: e,
+          }),
       });
 
       if (result instanceof ControlRequestError) {

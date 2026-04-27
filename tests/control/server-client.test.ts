@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "bun:test";
+import { describe, expect, test, vi } from 'bun:test';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -57,7 +57,10 @@ describe('control server smoke', () => {
       getActiveWorkspace: () => workspace,
       switchWorkspace: () => {},
       focusPane: () => {},
+      closePaneById: () => {},
       splitPane: () => {},
+      setLayoutMode: () => {},
+      setWorkspaceLabel: () => {},
       writeToPty: (ptyId, data) => {
         sent = { ptyId, data };
       },
@@ -73,6 +76,16 @@ describe('control server smoke', () => {
         lastSwitchedAt: Date.now(),
         autoNamed: false,
       }),
+      listSessions: () => [
+        {
+          id: 'session-1',
+          name: 'test',
+          createdAt: 1,
+          lastSwitchedAt: 2,
+          autoNamed: false,
+        },
+      ],
+      switchSession: async () => {},
       getActiveSessionId: () => 'session-1',
     });
 
@@ -84,6 +97,122 @@ describe('control server smoke', () => {
     await client.request('pane.send', { text: 'echo test', pane: 'focused' });
 
     expect(sent).toEqual({ ptyId: 'pty-1', data: 'echo test' });
+
+    client.close();
+    await server.close();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('headless commands list and mutate sessions, workspaces, panes, and layout', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmux-control-'));
+    process.env.OPENMUX_CONTROL_SOCKET_DIR = tempDir;
+    process.env.OPENMUX_CONTROL_SOCKET_PATH = path.join(tempDir, 'openmux-ui.sock');
+
+    await mockControlProtocol();
+
+    const { startControlServer } = await import('../../src/control/server');
+    const { connectControlClient } = await import('../../src/control/client');
+
+    const workspace: Workspace = {
+      id: 1,
+      label: 'dev',
+      mainPane: { id: 'pane-1', ptyId: 'pty-1', title: 'main' },
+      stackPanes: [{ id: 'pane-2', ptyId: 'pty-2', title: 'logs' }],
+      focusedPaneId: 'pane-1',
+      activeStackIndex: 0,
+      layoutMode: 'vertical',
+      zoomed: false,
+    };
+
+    const layoutState = createLayoutState(workspace);
+    const sessions = [
+      { id: 'session-1', name: 'dev', createdAt: 1, lastSwitchedAt: 2, autoNamed: false },
+      { id: 'session-2', name: 'logs', createdAt: 3, lastSwitchedAt: 4, autoNamed: false },
+    ];
+    let switchedWorkspace: number | null = null;
+    let focusedPane: string | null = null;
+    let closedPane: string | null = null;
+    let nextLayoutMode: string | null = null;
+    let renamedWorkspace: { id: number; label?: string } | null = null;
+    let switchedSession: string | null = null;
+
+    const server = await startControlServer({
+      getLayoutState: () => layoutState,
+      getActiveWorkspace: () => workspace,
+      switchWorkspace: (workspaceId) => {
+        switchedWorkspace = workspaceId;
+      },
+      focusPane: (paneId) => {
+        focusedPane = paneId;
+      },
+      closePaneById: (paneId) => {
+        closedPane = paneId;
+      },
+      splitPane: () => {},
+      setLayoutMode: (mode) => {
+        nextLayoutMode = mode;
+      },
+      setWorkspaceLabel: (workspaceId, label) => {
+        renamedWorkspace = { id: workspaceId, label };
+      },
+      writeToPty: () => {},
+      getEmulator: () => null as ITerminalEmulator | null,
+      fetchTerminalState: async () => null,
+      fetchScrollState: async () => null,
+      capturePty: async () => null,
+      isPtyActive: (ptyId) => ptyId === 'pty-1',
+      createSession: async () => sessions[0],
+      listSessions: () => sessions,
+      switchSession: async (sessionId) => {
+        switchedSession = sessionId;
+      },
+      getActiveSessionId: () => 'session-1',
+    });
+
+    const client = await connectControlClient({
+      socketPath: process.env.OPENMUX_CONTROL_SOCKET_PATH,
+      timeoutMs: 500,
+    });
+
+    const sessionList = await client.request('session.list');
+    expect(
+      (sessionList.header.result as { sessions: Array<{ active: boolean }> }).sessions
+    ).toEqual([
+      { ...sessions[0], active: true },
+      { ...sessions[1], active: false },
+    ]);
+
+    await client.request('session.switch', { name: 'logs' });
+    expect(switchedSession).toBe('session-2');
+
+    const workspaceList = await client.request('workspace.list');
+    expect(
+      (workspaceList.header.result as { workspaces: Array<{ id: number; paneCount: number }> })
+        .workspaces
+    ).toMatchObject([{ id: 1, paneCount: 2 }]);
+
+    await client.request('workspace.switch', { workspaceId: 2 });
+    expect(switchedWorkspace).toBe(2);
+
+    await client.request('workspace.rename', { workspaceId: 1, label: 'ops' });
+    expect(renamedWorkspace).toEqual({ id: 1, label: 'ops' });
+
+    const paneList = await client.request('pane.list', { all: true });
+    expect(
+      (paneList.header.result as { panes: Array<{ id: string; activePty: boolean }> }).panes
+    ).toMatchObject([
+      { id: 'pane-1', activePty: true },
+      { id: 'pane-2', activePty: false },
+    ]);
+
+    await client.request('pane.focus', { pane: 'pane:pane-2' });
+    expect(focusedPane).toBe('pane-2');
+
+    await client.request('pane.close', { pane: 'pane:pane-2' });
+    expect(closedPane).toBe('pane-2');
+
+    await client.request('layout.setMode', { mode: 'stacked' });
+    expect(nextLayoutMode).toBe('stacked');
 
     client.close();
     await server.close();

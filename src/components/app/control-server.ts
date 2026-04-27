@@ -19,7 +19,10 @@ export function setupControlServer(params: {
       getActiveWorkspace: () => params.layout.activeWorkspace,
       switchWorkspace: params.layout.switchWorkspace,
       focusPane: params.layout.focusPane,
+      closePaneById: params.layout.closePaneById,
       splitPane: params.layout.splitPane,
+      setLayoutMode: params.layout.setLayoutMode,
+      setWorkspaceLabel: params.layout.setWorkspaceLabel,
       writeToPty: params.terminal.writeToPTY,
       getEmulator: params.terminal.getEmulatorSync,
       fetchTerminalState: getTerminalState,
@@ -27,6 +30,8 @@ export function setupControlServer(params: {
       capturePty,
       isPtyActive: params.terminal.isPtyActive,
       createSession: params.session.createSession,
+      listSessions: () => params.session.state.sessions,
+      switchSession: params.session.switchSession,
       getActiveSessionId: () => params.session.state.activeSessionId,
     })
       .then((created) => {
