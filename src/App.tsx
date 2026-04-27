@@ -193,17 +193,20 @@ function AppContent() {
     isPtyActive,
   });
 
-  const { handleNewPane, handleSplitPane } = usePtyCreation({
+  const { handleNewPane, handleSplitPane, handleToggleScratchPane } = usePtyCreation({
     layout: {
       get panes() {
         return layout.panes;
       },
       getFocusedPaneId: () => layout.activeWorkspace.focusedPaneId,
+      getScratchVisible: () => layout.activeWorkspace.scratchVisible === true,
+      getScratchPtyId: () => layout.activeWorkspace.scratchPane?.ptyId,
     },
     terminal,
     sessionState,
     newPane,
     splitPane: layout.splitPane,
+    toggleScratchPane: layout.toggleScratchPane,
   });
 
   // Create paste handler for manual paste (Ctrl+V, prefix+p/])
@@ -341,6 +344,7 @@ function AppContent() {
       onDumpConsoleLogs: handleDumpConsoleLogs,
       onToggleAggregateView: openAggregateView,
       onToggleCommandPalette: toggleCommandPalette,
+      onToggleScratchPane: handleToggleScratchPane,
       onToggleVimMode: handleToggleVimMode,
       onTogglePrefixOnly: handleTogglePrefixOnly,
       onRefreshHostColors: handleRefreshHostColors,
@@ -369,6 +373,7 @@ function AppContent() {
     onDumpConsoleLogs: handleDumpConsoleLogs,
     onToggleAggregateView: openAggregateView,
     onToggleCommandPalette: toggleCommandPalette,
+    onToggleScratchPane: handleToggleScratchPane,
     onToggleVimMode: handleToggleVimMode,
     onTogglePrefixOnly: handleTogglePrefixOnly,
     onRefreshHostColors: handleRefreshHostColors,

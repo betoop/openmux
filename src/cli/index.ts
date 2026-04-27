@@ -119,6 +119,29 @@ async function runPaneSplit(
   }
 }
 
+async function runPaneScratch(
+  command: Extract<CliCommand, { kind: 'pane.scratch.toggle' }>
+): Promise<CliOutcome> {
+  const client = await withControlClient();
+  if (!client) {
+    printError('No active openmux UI. Attach first.');
+    return { kind: 'handled', exitCode: EXIT_NO_UI };
+  }
+
+  try {
+    await client.request('pane.scratch.toggle', {
+      workspaceId: command.workspaceId,
+    });
+    client.close();
+    return { kind: 'handled', exitCode: EXIT_SUCCESS };
+  } catch (error) {
+    client.close();
+    const mapped = handleControlError(error);
+    printError(mapped.message);
+    return { kind: 'handled', exitCode: mapped.exitCode };
+  }
+}
+
 async function runPaneSend(
   command: Extract<CliCommand, { kind: 'pane.send' }>
 ): Promise<CliOutcome> {
@@ -198,6 +221,8 @@ export async function runCli(args: string[]): Promise<CliOutcome> {
       return runSessionCreate(command.name);
     case 'pane.split':
       return runPaneSplit(command);
+    case 'pane.scratch.toggle':
+      return runPaneScratch(command);
     case 'pane.send':
       return runPaneSend(command);
     case 'pane.capture':

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from 'bun:test';
 import { parseCliArgs } from '../../src/cli/parse';
 
 describe('cli parser', () => {
@@ -49,7 +49,16 @@ describe('cli parser', () => {
   });
 
   test('parses pane split', () => {
-    const result = parseCliArgs(['pane', 'split', '--direction', 'vertical', '--workspace', '2', '--pane', 'stack:1']);
+    const result = parseCliArgs([
+      'pane',
+      'split',
+      '--direction',
+      'vertical',
+      '--workspace',
+      '2',
+      '--pane',
+      'stack:1',
+    ]);
     expect(result).toEqual({
       ok: true,
       command: {
@@ -58,6 +67,14 @@ describe('cli parser', () => {
         workspaceId: 2,
         pane: 'stack:1',
       },
+    });
+  });
+
+  test('parses pane scratch', () => {
+    const result = parseCliArgs(['pane', 'scratch', '--workspace', '3']);
+    expect(result).toEqual({
+      ok: true,
+      command: { kind: 'pane.scratch.toggle', workspaceId: 3 },
     });
   });
 

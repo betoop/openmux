@@ -57,6 +57,13 @@ const BASE_COMMANDS: CommandPaletteCommand[] = [
     keywords: ['zoom', 'pane'],
   },
   {
+    id: 'pane.scratch.toggle',
+    title: 'Toggle scratch pane',
+    description: 'Show or hide the workspace scratch pane',
+    action: 'pane.scratch.toggle',
+    keywords: ['scratch', 'popup', 'overlay', 'pane'],
+  },
+  {
     id: 'pane.focus.west',
     title: 'Focus pane left',
     description: 'Move focus to the pane on the left',

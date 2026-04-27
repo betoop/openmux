@@ -59,6 +59,7 @@ describe('control server smoke', () => {
       focusPane: () => {},
       closePaneById: () => {},
       splitPane: () => {},
+      toggleScratchPane: () => {},
       setLayoutMode: () => {},
       setWorkspaceLabel: () => {},
       writeToPty: (ptyId, data) => {
@@ -135,6 +136,7 @@ describe('control server smoke', () => {
     let nextLayoutMode: string | null = null;
     let renamedWorkspace: { id: number; label?: string } | null = null;
     let switchedSession: string | null = null;
+    let scratchToggled = false;
 
     const server = await startControlServer({
       getLayoutState: () => layoutState,
@@ -149,6 +151,9 @@ describe('control server smoke', () => {
         closedPane = paneId;
       },
       splitPane: () => {},
+      toggleScratchPane: () => {
+        scratchToggled = true;
+      },
       setLayoutMode: (mode) => {
         nextLayoutMode = mode;
       },
@@ -210,6 +215,9 @@ describe('control server smoke', () => {
 
     await client.request('pane.close', { pane: 'pane:pane-2' });
     expect(closedPane).toBe('pane-2');
+
+    await client.request('pane.scratch.toggle');
+    expect(scratchToggled).toBe(true);
 
     await client.request('layout.setMode', { mode: 'stacked' });
     expect(nextLayoutMode).toBe('stacked');

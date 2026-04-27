@@ -6,6 +6,7 @@ import type { LayoutNode, PaneData, Workspace } from '../../types';
 import type { LayoutState } from './types';
 import { getActiveWorkspace, recalculateLayout, updateWorkspace } from './helpers';
 import { containsPane, findSiblingPane, getFirstPane, removePaneFromNode } from '../../layout-tree';
+import { handleCloseScratchPane, isScratchPaneId } from './scratch-pane';
 
 type CloseOptions = {
   closingFocusedPane: boolean;
@@ -25,6 +26,10 @@ type StackCloseResult = {
 export function handleClosePane(state: LayoutState): LayoutState {
   const workspace = getActiveWorkspace(state);
   if (!workspace.focusedPaneId) return state;
+
+  if (isScratchPaneId(workspace, workspace.focusedPaneId)) {
+    return handleCloseScratchPane(state, workspace);
+  }
 
   return closePaneInWorkspace(state, workspace, workspace.focusedPaneId, {
     closingFocusedPane: true,
@@ -48,6 +53,7 @@ function findWorkspaceContainingPane(state: LayoutState, paneId: string): Worksp
   for (const workspace of Object.values(state.workspaces)) {
     if (!workspace) continue;
     if (
+      isScratchPaneId(workspace, paneId) ||
       (workspace.mainPane && containsPane(workspace.mainPane, paneId)) ||
       workspace.stackPanes.some((pane) => containsPane(pane, paneId))
     ) {
@@ -64,6 +70,10 @@ function closePaneInWorkspace(
   paneId: string,
   options: CloseOptions
 ): LayoutState {
+  if (isScratchPaneId(workspace, paneId)) {
+    return handleCloseScratchPane(state, workspace);
+  }
+
   const updated =
     workspace.mainPane && containsPane(workspace.mainPane, paneId)
       ? closeMainPane(workspace, paneId, options)

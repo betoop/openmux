@@ -37,3 +37,4 @@ export {
   handleMovePane,
   handleToggleZoom,
 } from './pane-ops';
+export { handleToggleScratchPane, handleCloseScratchPane } from './scratch-pane';

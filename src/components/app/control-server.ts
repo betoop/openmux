@@ -21,6 +21,7 @@ export function setupControlServer(params: {
       focusPane: params.layout.focusPane,
       closePaneById: params.layout.closePaneById,
       splitPane: params.layout.splitPane,
+      toggleScratchPane: params.layout.toggleScratchPane,
       setLayoutMode: params.layout.setLayoutMode,
       setWorkspaceLabel: params.layout.setWorkspaceLabel,
       writeToPty: params.terminal.writeToPTY,

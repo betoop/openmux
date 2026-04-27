@@ -13,12 +13,16 @@ export type CliCommand =
   | { kind: 'session.list'; json: boolean }
   | { kind: 'session.create'; name?: string }
   | ({ kind: 'pane.split'; direction: 'horizontal' | 'vertical' } & PaneCommandBase)
+  | ({ kind: 'pane.scratch.toggle' } & Pick<PaneCommandBase, 'workspaceId'>)
   | ({ kind: 'pane.send'; text: string } & PaneCommandBase)
-  | ({ kind: 'pane.capture'; format: 'text' | 'ansi'; lines: number; raw: boolean } & PaneCommandBase);
+  | ({
+      kind: 'pane.capture';
+      format: 'text' | 'ansi';
+      lines: number;
+      raw: boolean;
+    } & PaneCommandBase);
 
-export type ParseResult =
-  | { ok: true; command: CliCommand }
-  | { ok: false; error: string };
+export type ParseResult = { ok: true; command: CliCommand } | { ok: false; error: string };
 
 const HELP_FLAGS = new Set(['-h', '--help']);
 
@@ -44,6 +48,7 @@ function resolveHelpTopic(args: string[]): HelpTopic {
   }
   if (first === 'pane') {
     if (second === 'split') return 'pane.split';
+    if (second === 'scratch') return 'pane.scratch';
     if (second === 'send') return 'pane.send';
     if (second === 'capture') return 'pane.capture';
     return 'pane';
@@ -51,7 +56,11 @@ function resolveHelpTopic(args: string[]): HelpTopic {
   return 'root';
 }
 
-function readOptionValue(args: string[], index: number, flag: string): { value: string; nextIndex: number } | { error: string } {
+function readOptionValue(
+  args: string[],
+  index: number,
+  flag: string
+): { value: string; nextIndex: number } | { error: string } {
   const arg = args[index];
   const eqIndex = arg.indexOf('=');
   if (eqIndex >= 0) {
@@ -324,6 +333,27 @@ function parsePaneSend(args: string[]): ParseResult {
   return { ok: true, command: { kind: 'pane.send', text, workspaceId, pane } };
 }
 
+function parsePaneScratch(args: string[]): ParseResult {
+  let workspaceId: number | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--workspace' || arg.startsWith('--workspace=')) {
+      const value = readOptionValue(args, i, '--workspace');
+      if ('error' in value) return { ok: false, error: value.error };
+      const parsed = parseWorkspace(value.value);
+      if (parsed === null) return { ok: false, error: 'Workspace must be 1-9.' };
+      workspaceId = parsed;
+      i = value.nextIndex;
+      continue;
+    }
+
+    return { ok: false, error: `Unknown argument: ${arg}` };
+  }
+
+  return { ok: true, command: { kind: 'pane.scratch.toggle', workspaceId } };
+}
+
 function parsePaneCapture(args: string[]): ParseResult {
   let format: 'text' | 'ansi' = 'text';
   let lines = 200;
@@ -410,6 +440,7 @@ export function parseCliArgs(args: string[]): ParseResult {
     const paneArgs = rest.slice(1);
 
     if (paneCommand === 'split') return parsePaneSplit(paneArgs);
+    if (paneCommand === 'scratch') return parsePaneScratch(paneArgs);
     if (paneCommand === 'send') return parsePaneSend(paneArgs);
     if (paneCommand === 'capture') return parsePaneCapture(paneArgs);
     return { ok: false, error: 'Unknown pane command.' };

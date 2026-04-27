@@ -38,6 +38,7 @@ export interface KeyboardHandlerOptions {
   onDumpConsoleLogs?: () => void;
   onToggleAggregateView?: () => void;
   onToggleCommandPalette?: () => void;
+  onToggleScratchPane?: () => void;
   onToggleVimMode?: () => void;
   onRefreshHostColors?: () => void;
   onTogglePrefixOnly?: () => void;

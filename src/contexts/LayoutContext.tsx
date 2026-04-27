@@ -11,8 +11,15 @@ import {
   type ParentProps,
 } from 'solid-js';
 import { createStore, unwrap, reconcile, produce } from 'solid-js/store';
-import type { Workspace, WorkspaceId, PaneData, Direction, LayoutMode, SplitDirection } from '../core/types';
-import type { LayoutConfig} from '../core/config';
+import type {
+  Workspace,
+  WorkspaceId,
+  PaneData,
+  Direction,
+  LayoutMode,
+  SplitDirection,
+} from '../core/types';
+import type { LayoutConfig } from '../core/config';
 import { DEFAULT_CONFIG } from '../core/config';
 import {
   getAllWorkspacePanes,
@@ -30,7 +37,6 @@ import {
   type LayoutAction,
   type Workspaces,
 } from '../core/operations/layout-actions';
-
 
 export interface LayoutContextValue {
   state: LayoutState;
@@ -59,6 +65,7 @@ export interface LayoutContextValue {
   swapMain: () => void;
   movePane: (direction: Direction) => void;
   toggleZoom: () => void;
+  toggleScratchPane: () => void;
   loadSession: (params: { workspaces: Workspaces; activeWorkspaceId: WorkspaceId }) => void;
   clearAll: () => void;
   /** Get estimated dimensions for a new pane (for PTY creation before pane exists) */
@@ -66,7 +73,6 @@ export interface LayoutContextValue {
 }
 
 const LayoutContext = createContext<LayoutContextValue | null>(null);
-
 
 interface LayoutProviderProps extends ParentProps {
   config?: Partial<LayoutConfig>;
@@ -94,20 +100,22 @@ export function LayoutProvider(props: LayoutProviderProps) {
   // Update layout config and recalculate rectangles when config changes
   createEffect(() => {
     const nextConfig = mergedConfig();
-    setState(produce((draft) => {
-      draft.config = nextConfig;
-      for (const [id, workspace] of Object.entries(draft.workspaces)) {
-        if (workspace?.mainPane) {
-          draft.workspaces[id as unknown as WorkspaceId] = calculateMasterStackLayout(
-            workspace,
-            draft.viewport,
-            nextConfig
-          );
+    setState(
+      produce((draft) => {
+        draft.config = nextConfig;
+        for (const [id, workspace] of Object.entries(draft.workspaces)) {
+          if (workspace?.mainPane) {
+            draft.workspaces[id as unknown as WorkspaceId] = calculateMasterStackLayout(
+              workspace,
+              draft.viewport,
+              nextConfig
+            );
+          }
         }
-      }
-      draft.layoutVersion++;
-      draft.layoutGeometryVersion++;
-    }));
+        draft.layoutVersion++;
+        draft.layoutGeometryVersion++;
+      })
+    );
   });
 
   // Apply state update using batch to group all updates into a single render cycle
@@ -152,25 +160,31 @@ export function LayoutProvider(props: LayoutProviderProps) {
   const applySetPanePty = (paneId: string, ptyId: string) => {
     const wsId = state.activeWorkspaceId;
 
-    setState(produce((draft) => {
-      const workspace = draft.workspaces[wsId];
-      if (!workspace) return;
+    setState(
+      produce((draft) => {
+        const workspace = draft.workspaces[wsId];
+        if (!workspace) return;
 
-      if (workspace.mainPane && containsPane(workspace.mainPane, paneId)) {
-        workspace.mainPane = updatePaneInNode(
-          workspace.mainPane,
-          paneId,
-          pane => ({ ...pane, ptyId })
+        if (workspace.scratchPane?.id === paneId) {
+          workspace.scratchPane.ptyId = ptyId;
+          return;
+        }
+
+        if (workspace.mainPane && containsPane(workspace.mainPane, paneId)) {
+          workspace.mainPane = updatePaneInNode(workspace.mainPane, paneId, (pane) => ({
+            ...pane,
+            ptyId,
+          }));
+          return;
+        }
+
+        workspace.stackPanes = workspace.stackPanes.map((pane) =>
+          containsPane(pane, paneId)
+            ? updatePaneInNode(pane, paneId, (target) => ({ ...target, ptyId }))
+            : pane
         );
-        return;
-      }
-
-      workspace.stackPanes = workspace.stackPanes.map((pane) =>
-        containsPane(pane, paneId)
-          ? updatePaneInNode(pane, paneId, target => ({ ...target, ptyId }))
-          : pane
-      );
-    }));
+      })
+    );
   };
 
   // Fast path for NEW_PANE - use produce for direct mutations instead of reconcile
@@ -180,36 +194,42 @@ export function LayoutProvider(props: LayoutProviderProps) {
     const newPaneId = generatePaneId();
 
     // Use produce for efficient in-place updates
-    setState(produce((draft) => {
-      // Ensure workspace exists
-      if (!draft.workspaces[wsId]) {
-        draft.workspaces[wsId] = createWorkspace(wsId, draft.config.defaultLayoutMode);
-      }
-      const workspace = draft.workspaces[wsId]!;
+    setState(
+      produce((draft) => {
+        // Ensure workspace exists
+        if (!draft.workspaces[wsId]) {
+          draft.workspaces[wsId] = createWorkspace(wsId, draft.config.defaultLayoutMode);
+        }
+        const workspace = draft.workspaces[wsId]!;
 
-      const newPane = {
-        id: newPaneId,
-        ptyId,
-        title: title ?? 'shell',
-      };
+        const newPane = {
+          id: newPaneId,
+          ptyId,
+          title: title ?? 'shell',
+        };
 
-      if (!workspace.mainPane) {
-        // First pane becomes main
-        workspace.mainPane = newPane;
-        workspace.focusedPaneId = newPaneId;
-      } else {
-        // New pane goes to stack
-        workspace.stackPanes.push(newPane);
-        workspace.focusedPaneId = newPaneId;
-        workspace.activeStackIndex = workspace.stackPanes.length - 1;
-      }
+        if (!workspace.mainPane) {
+          // First pane becomes main
+          workspace.mainPane = newPane;
+          workspace.focusedPaneId = newPaneId;
+        } else {
+          // New pane goes to stack
+          workspace.stackPanes.push(newPane);
+          workspace.focusedPaneId = newPaneId;
+          workspace.activeStackIndex = workspace.stackPanes.length - 1;
+        }
 
-      // Recalculate layout with split-aware rectangles
-      draft.workspaces[wsId] = calculateMasterStackLayout(workspace, draft.viewport, draft.config);
+        // Recalculate layout with split-aware rectangles
+        draft.workspaces[wsId] = calculateMasterStackLayout(
+          workspace,
+          draft.viewport,
+          draft.config
+        );
 
-      draft.layoutVersion++;
-      draft.layoutGeometryVersion++;
-    }));
+        draft.layoutVersion++;
+        draft.layoutGeometryVersion++;
+      })
+    );
 
     return newPaneId;
   };
@@ -291,8 +311,13 @@ export function LayoutProvider(props: LayoutProviderProps) {
   const swapMain = () => dispatch({ type: 'SWAP_MAIN' });
   const movePane = (direction: Direction) => dispatch({ type: 'MOVE_PANE', direction });
   const toggleZoom = () => dispatch({ type: 'TOGGLE_ZOOM' });
+  const toggleScratchPane = () => dispatch({ type: 'TOGGLE_SCRATCH_PANE' });
   const loadSession = (params: { workspaces: Workspaces; activeWorkspaceId: WorkspaceId }) =>
-    dispatch({ type: 'LOAD_SESSION', workspaces: params.workspaces, activeWorkspaceId: params.activeWorkspaceId });
+    dispatch({
+      type: 'LOAD_SESSION',
+      workspaces: params.workspaces,
+      activeWorkspaceId: params.activeWorkspaceId,
+    });
   const clearAll = () => dispatch({ type: 'CLEAR_ALL' });
 
   // Create pane with PTY already attached - SINGLE render, no stutter
@@ -332,13 +357,27 @@ export function LayoutProvider(props: LayoutProviderProps) {
 
   // Build context value - note: computed values need to be accessed as functions in Solid
   const value: LayoutContextValue = {
-    get state() { return state; },
-    get activeWorkspace() { return activeWorkspace(); },
-    get paneCount() { return paneCount(); },
-    get panes() { return panes(); },
-    get populatedWorkspaces() { return populatedWorkspaces(); },
-    get layoutVersion() { return state.layoutVersion; },
-    get layoutGeometryVersion() { return state.layoutGeometryVersion; },
+    get state() {
+      return state;
+    },
+    get activeWorkspace() {
+      return activeWorkspace();
+    },
+    get paneCount() {
+      return paneCount();
+    },
+    get panes() {
+      return panes();
+    },
+    get populatedWorkspaces() {
+      return populatedWorkspaces();
+    },
+    get layoutVersion() {
+      return state.layoutVersion;
+    },
+    get layoutGeometryVersion() {
+      return state.layoutGeometryVersion;
+    },
     focusPane,
     navigate,
     newPane,
@@ -355,18 +394,14 @@ export function LayoutProvider(props: LayoutProviderProps) {
     swapMain,
     movePane,
     toggleZoom,
+    toggleScratchPane,
     loadSession,
     clearAll,
     getNewPaneDimensions,
   };
 
-  return (
-    <LayoutContext.Provider value={value}>
-      {props.children}
-    </LayoutContext.Provider>
-  );
+  return <LayoutContext.Provider value={value}>{props.children}</LayoutContext.Provider>;
 }
-
 
 export function useLayout(): LayoutContextValue {
   const context = useContext(LayoutContext);

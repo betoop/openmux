@@ -21,16 +21,22 @@ export function handleFocusPane(state: LayoutState, paneId: string): LayoutState
 
   // Update activeStackIndex if focusing a stack pane
   let activeStackIndex = workspace.activeStackIndex;
-  const stackIndex = workspace.stackPanes.findIndex(p => containsPane(p, paneId));
+  const stackIndex = workspace.stackPanes.findIndex((p) => containsPane(p, paneId));
   const stackIndexChanged = stackIndex >= 0 && stackIndex !== workspace.activeStackIndex;
   if (stackIndex >= 0) {
     activeStackIndex = stackIndex;
   }
 
+  const focusingScratch = workspace.scratchPane?.id === paneId;
+
   let updated: Workspace = {
     ...workspace,
     focusedPaneId: paneId,
     activeStackIndex,
+    scratchPreviousFocusedPaneId:
+      workspace.scratchVisible && !focusingScratch
+        ? paneId
+        : workspace.scratchPreviousFocusedPaneId,
   };
 
   // In stacked layout, switching active stack entry needs a layout pass to set rectangles.

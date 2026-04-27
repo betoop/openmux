@@ -157,7 +157,7 @@ export function serializeWorkspace(
     label: workspace.label,
     mainPane,
     stackPanes,
-    focusedPaneId: workspace.focusedPaneId ?? null,
+    focusedPaneId: focusedPane?.id ?? null,
     activeStackIndex: workspace.activeStackIndex,
     lastFocusedPaneIds: workspace.lastFocusedPaneIds ?? [],
     layoutMode: workspace.layoutMode,

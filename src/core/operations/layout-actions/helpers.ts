@@ -188,6 +188,13 @@ export function updatePaneProperty<T extends keyof PaneData>(
 ): Workspace {
   const updateFn = (pane: PaneData): PaneData => ({ ...pane, [property]: value }) as PaneData;
 
+  if (workspace.scratchPane?.id === paneId) {
+    return {
+      ...workspace,
+      scratchPane: updateFn(workspace.scratchPane),
+    };
+  }
+
   if (workspace.mainPane && containsPane(workspace.mainPane, paneId)) {
     return {
       ...workspace,
