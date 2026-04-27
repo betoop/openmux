@@ -1,3 +1,5 @@
+import fs from 'fs/promises';
+
 import { connectControlClient, ControlClientError } from '../control/client';
 import { formatHelp } from './help';
 import { parseCliArgs, type CliCommand } from './parse';
@@ -173,6 +175,90 @@ async function runPaneCapture(
   }
 }
 
+async function runLayoutExport(
+  command: Extract<CliCommand, { kind: 'layout.export' }>
+): Promise<CliOutcome> {
+  const client = await withControlClient();
+  if (!client) {
+    printError('No active openmux UI. Attach first.');
+    return { kind: 'handled', exitCode: EXIT_NO_UI };
+  }
+
+  let snapshot: unknown;
+  try {
+    const response = await client.request('layout.export', {
+      name: command.name,
+    });
+    const result = response.header.result as { snapshot?: unknown } | undefined;
+    snapshot = result?.snapshot;
+    client.close();
+  } catch (error) {
+    client.close();
+    const mapped = handleControlError(error);
+    printError(mapped.message);
+    return { kind: 'handled', exitCode: mapped.exitCode };
+  }
+
+  if (!snapshot) {
+    printError('Control response did not include a layout snapshot.');
+    return { kind: 'handled', exitCode: EXIT_INTERNAL };
+  }
+
+  const json = JSON.stringify(snapshot, null, 2);
+  if (command.file) {
+    try {
+      await fs.writeFile(command.file, `${json}\n`, 'utf8');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      printError(`Failed to write layout snapshot: ${message}`);
+      return { kind: 'handled', exitCode: EXIT_INTERNAL };
+    }
+  }
+
+  if (!command.file || command.json) {
+    console.log(json);
+  } else {
+    console.log(command.file);
+  }
+
+  return { kind: 'handled', exitCode: EXIT_SUCCESS };
+}
+
+async function runLayoutImport(
+  command: Extract<CliCommand, { kind: 'layout.import' }>
+): Promise<CliOutcome> {
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(await fs.readFile(command.file, 'utf8'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printError(`Failed to read layout snapshot: ${message}`);
+    return { kind: 'handled', exitCode: EXIT_USAGE };
+  }
+
+  const client = await withControlClient();
+  if (!client) {
+    printError('No active openmux UI. Attach first.');
+    return { kind: 'handled', exitCode: EXIT_NO_UI };
+  }
+
+  try {
+    const response = await client.request('layout.import', { snapshot });
+    if (command.json) {
+      console.log(JSON.stringify(response.header.result ?? {}));
+    } else {
+      console.log('Imported layout snapshot.');
+    }
+    client.close();
+    return { kind: 'handled', exitCode: EXIT_SUCCESS };
+  } catch (error) {
+    client.close();
+    const mapped = handleControlError(error);
+    printError(mapped.message);
+    return { kind: 'handled', exitCode: mapped.exitCode };
+  }
+}
+
 export async function runCli(args: string[]): Promise<CliOutcome> {
   const parsed = parseCliArgs(args);
   if (!parsed.ok) {
@@ -196,6 +282,10 @@ export async function runCli(args: string[]): Promise<CliOutcome> {
       return runSessionList(command.json);
     case 'session.create':
       return runSessionCreate(command.name);
+    case 'layout.export':
+      return runLayoutExport(command);
+    case 'layout.import':
+      return runLayoutImport(command);
     case 'pane.split':
       return runPaneSplit(command);
     case 'pane.send':

@@ -5,6 +5,9 @@ export type HelpTopic =
   | 'session'
   | 'session.list'
   | 'session.create'
+  | 'layout'
+  | 'layout.export'
+  | 'layout.import'
   | 'pane'
   | 'pane.split'
   | 'pane.send'
@@ -29,6 +32,7 @@ const ROOT_HELP = (version?: string): string[] => [
   '  attach           Steal and attach to the UI (default).',
   '  update           Check for and install new releases.',
   '  session          List/create sessions (disk-backed).',
+  '  layout           Export/import declarative layout snapshots.',
   '  pane             Control panes in the active UI.',
   '',
   'Options:',
@@ -119,6 +123,51 @@ const SESSION_CREATE_HELP = (version?: string): string[] => [
   '  Creates a session and prints its id to stdout.',
 ];
 
+const LAYOUT_HELP = (version?: string): string[] => [
+  formatHeader('layout', version),
+  '',
+  'Usage:',
+  '  openmux layout export [--file <path>] [--name <name>] [--json]',
+  '  openmux layout import --file <path> [--json]',
+  '',
+  'Description:',
+  '  Layout commands require a running UI (control socket).',
+  '  Snapshots use the same declarative format as templates.',
+  '',
+  'Subcommands:',
+  '  export   Export the active layout snapshot.',
+  '  import   Replace the active session layout from a snapshot file.',
+];
+
+const LAYOUT_EXPORT_HELP = (version?: string): string[] => [
+  formatHeader('layout.export', version),
+  '',
+  'Usage:',
+  '  openmux layout export [--file <path>] [--name <name>] [--json]',
+  '',
+  'Options:',
+  '  --file <path>   Write snapshot JSON to a file instead of stdout.',
+  '  --name <name>   Override the snapshot name.',
+  '  --json          Also print snapshot JSON when writing to a file.',
+  '',
+  'Output:',
+  '  Without --file, snapshot JSON is printed to stdout.',
+];
+
+const LAYOUT_IMPORT_HELP = (version?: string): string[] => [
+  formatHeader('layout.import', version),
+  '',
+  'Usage:',
+  '  openmux layout import --file <path> [--json]',
+  '',
+  'Options:',
+  '  --file <path>   Read snapshot JSON from a file.',
+  '  --json          Print the control response as JSON.',
+  '',
+  'Description:',
+  '  Replaces the active session layout and creates PTYs from stored cwd/commands.',
+];
+
 const PANE_HELP = (version?: string): string[] => [
   formatHeader('pane', version),
   '',
@@ -194,6 +243,9 @@ const HELP_TOPICS: Record<HelpTopic, (version?: string) => string[]> = {
   session: SESSION_HELP,
   'session.list': SESSION_LIST_HELP,
   'session.create': SESSION_CREATE_HELP,
+  layout: LAYOUT_HELP,
+  'layout.export': LAYOUT_EXPORT_HELP,
+  'layout.import': LAYOUT_IMPORT_HELP,
   pane: PANE_HELP,
   'pane.split': PANE_SPLIT_HELP,
   'pane.send': PANE_SEND_HELP,

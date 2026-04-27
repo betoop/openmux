@@ -12,13 +12,18 @@ export type CliCommand =
   | { kind: 'update'; yes: boolean; prerelease: boolean }
   | { kind: 'session.list'; json: boolean }
   | { kind: 'session.create'; name?: string }
+  | { kind: 'layout.export'; file?: string; name?: string; json: boolean }
+  | { kind: 'layout.import'; file: string; json: boolean }
   | ({ kind: 'pane.split'; direction: 'horizontal' | 'vertical' } & PaneCommandBase)
   | ({ kind: 'pane.send'; text: string } & PaneCommandBase)
-  | ({ kind: 'pane.capture'; format: 'text' | 'ansi'; lines: number; raw: boolean } & PaneCommandBase);
+  | ({
+      kind: 'pane.capture';
+      format: 'text' | 'ansi';
+      lines: number;
+      raw: boolean;
+    } & PaneCommandBase);
 
-export type ParseResult =
-  | { ok: true; command: CliCommand }
-  | { ok: false; error: string };
+export type ParseResult = { ok: true; command: CliCommand } | { ok: false; error: string };
 
 const HELP_FLAGS = new Set(['-h', '--help']);
 
@@ -42,6 +47,11 @@ function resolveHelpTopic(args: string[]): HelpTopic {
     if (second === 'create') return 'session.create';
     return 'session';
   }
+  if (first === 'layout') {
+    if (second === 'export') return 'layout.export';
+    if (second === 'import') return 'layout.import';
+    return 'layout';
+  }
   if (first === 'pane') {
     if (second === 'split') return 'pane.split';
     if (second === 'send') return 'pane.send';
@@ -51,7 +61,11 @@ function resolveHelpTopic(args: string[]): HelpTopic {
   return 'root';
 }
 
-function readOptionValue(args: string[], index: number, flag: string): { value: string; nextIndex: number } | { error: string } {
+function readOptionValue(
+  args: string[],
+  index: number,
+  flag: string
+): { value: string; nextIndex: number } | { error: string } {
   const arg = args[index];
   const eqIndex = arg.indexOf('=');
   if (eqIndex >= 0) {
@@ -232,6 +246,75 @@ function parseUpdate(args: string[]): ParseResult {
   return { ok: true, command: { kind: 'update', yes, prerelease } };
 }
 
+function parseLayoutExport(args: string[]): ParseResult {
+  let file: string | undefined;
+  let name: string | undefined;
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--file' || arg.startsWith('--file=')) {
+      const value = readOptionValue(args, i, '--file');
+      if ('error' in value) return { ok: false, error: value.error };
+      file = value.value;
+      i = value.nextIndex;
+      continue;
+    }
+    if (arg === '--name' || arg.startsWith('--name=')) {
+      const value = readOptionValue(args, i, '--name');
+      if ('error' in value) return { ok: false, error: value.error };
+      name = value.value;
+      i = value.nextIndex;
+      continue;
+    }
+    if (arg === '--json') {
+      json = true;
+      continue;
+    }
+
+    return { ok: false, error: `Unknown argument: ${arg}` };
+  }
+
+  return { ok: true, command: { kind: 'layout.export', file, name, json } };
+}
+
+function parseLayoutImport(args: string[]): ParseResult {
+  let file: string | undefined;
+  let json = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--file' || arg.startsWith('--file=')) {
+      const value = readOptionValue(args, i, '--file');
+      if ('error' in value) return { ok: false, error: value.error };
+      file = value.value;
+      i = value.nextIndex;
+      continue;
+    }
+    if (arg === '--json') {
+      json = true;
+      continue;
+    }
+
+    return { ok: false, error: `Unknown argument: ${arg}` };
+  }
+
+  if (!file) {
+    return { ok: false, error: 'Missing --file.' };
+  }
+
+  return { ok: true, command: { kind: 'layout.import', file, json } };
+}
+
+function parseLayout(args: string[]): ParseResult {
+  const subcommand = args[0];
+  const rest = args.slice(1);
+
+  if (subcommand === 'export') return parseLayoutExport(rest);
+  if (subcommand === 'import') return parseLayoutImport(rest);
+  return { ok: false, error: 'Unknown layout command.' };
+}
+
 function parsePaneSplit(args: string[]): ParseResult {
   let direction: 'horizontal' | 'vertical' | null = null;
   let workspaceId: number | undefined;
@@ -403,6 +486,10 @@ export function parseCliArgs(args: string[]): ParseResult {
 
   if (command === 'update') {
     return parseUpdate(rest);
+  }
+
+  if (command === 'layout') {
+    return parseLayout(rest);
   }
 
   if (command === 'pane') {

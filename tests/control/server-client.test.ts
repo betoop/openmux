@@ -28,6 +28,45 @@ function createLayoutState(workspace: Workspace): LayoutState {
   };
 }
 
+function createLayoutSnapshot(): TemplateSession & { activeWorkspaceId: 2 } {
+  return {
+    version: 1,
+    id: 'snapshot-1',
+    name: 'Snapshot',
+    createdAt: 1,
+    updatedAt: 1,
+    activeWorkspaceId: 2,
+    defaults: {
+      workspaceCount: 2,
+      paneCount: 1,
+      layoutMode: 'vertical',
+      cwd: '/tmp',
+    },
+    workspaces: [
+      {
+        id: 1,
+        label: 'dev',
+        layoutMode: 'vertical',
+        panes: [{ role: 'main', cwd: '/tmp' }],
+        layout: {
+          main: { type: 'pane', cwd: '/tmp' },
+          stack: [],
+        },
+      },
+      {
+        id: 2,
+        label: 'ops',
+        layoutMode: 'stacked',
+        panes: [{ role: 'main', cwd: '/var/log' }],
+        layout: {
+          main: { type: 'pane', cwd: '/var/log' },
+          stack: [],
+        },
+      },
+    ],
+  };
+}
+
 describe('control server smoke', () => {
   test('pane.send routes through control socket', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmux-control-'));
@@ -242,42 +281,7 @@ describe('control server smoke', () => {
     };
 
     const layoutState = createLayoutState(workspace);
-    const snapshot: TemplateSession & { activeWorkspaceId: 2 } = {
-      version: 1,
-      id: 'snapshot-1',
-      name: 'Snapshot',
-      createdAt: 1,
-      updatedAt: 1,
-      activeWorkspaceId: 2,
-      defaults: {
-        workspaceCount: 2,
-        paneCount: 1,
-        layoutMode: 'vertical',
-        cwd: '/tmp',
-      },
-      workspaces: [
-        {
-          id: 1,
-          label: 'dev',
-          layoutMode: 'vertical',
-          panes: [{ role: 'main', cwd: '/tmp' }],
-          layout: {
-            main: { type: 'pane', cwd: '/tmp' },
-            stack: [],
-          },
-        },
-        {
-          id: 2,
-          label: 'ops',
-          layoutMode: 'stacked',
-          panes: [{ role: 'main', cwd: '/var/log' }],
-          layout: {
-            main: { type: 'pane', cwd: '/var/log' },
-            stack: [],
-          },
-        },
-      ],
-    };
+    const snapshot = createLayoutSnapshot();
     let exportName: string | undefined;
     let importedSnapshot: unknown = null;
 
@@ -341,6 +345,94 @@ describe('control server smoke', () => {
     });
 
     client.close();
+    await server.close();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('cli layout snapshot commands round-trip through control socket', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmux-control-'));
+    process.env.OPENMUX_CONTROL_SOCKET_DIR = tempDir;
+    process.env.OPENMUX_CONTROL_SOCKET_PATH = path.join(tempDir, 'openmux-ui.sock');
+
+    await mockControlProtocol();
+
+    const { startControlServer } = await import('../../src/control/server');
+    const { runCli } = await import('../../src/cli/index');
+
+    const workspace: Workspace = {
+      id: 1,
+      label: 'dev',
+      mainPane: { id: 'pane-1', ptyId: 'pty-1', title: 'main' },
+      stackPanes: [],
+      focusedPaneId: 'pane-1',
+      activeStackIndex: 0,
+      layoutMode: 'vertical',
+      zoomed: false,
+    };
+
+    const layoutState = createLayoutState(workspace);
+    const snapshot = createLayoutSnapshot();
+    const snapshotPath = path.join(tempDir, 'layout.json');
+    let importedSnapshot: unknown = null;
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((message?: unknown) => {
+      logs.push(String(message ?? ''));
+    });
+
+    const server = await startControlServer({
+      getLayoutState: () => layoutState,
+      getActiveWorkspace: () => workspace,
+      switchWorkspace: () => {},
+      focusPane: () => {},
+      closePaneById: () => {},
+      splitPane: () => {},
+      setLayoutMode: () => {},
+      setWorkspaceLabel: () => {},
+      writeToPty: () => {},
+      getEmulator: () => null as ITerminalEmulator | null,
+      fetchTerminalState: async () => null,
+      fetchScrollState: async () => null,
+      capturePty: async () => null,
+      isPtyActive: () => true,
+      createSession: async () => ({
+        id: 'session-1',
+        name: 'test',
+        createdAt: Date.now(),
+        lastSwitchedAt: Date.now(),
+        autoNamed: false,
+      }),
+      listSessions: () => [
+        {
+          id: 'session-1',
+          name: 'test',
+          createdAt: 1,
+          lastSwitchedAt: 2,
+          autoNamed: false,
+        },
+      ],
+      switchSession: async () => {},
+      getActiveSessionId: () => 'session-1',
+      exportLayoutSnapshot: async () => snapshot,
+      importLayoutSnapshot: async (nextSnapshot) => {
+        importedSnapshot = nextSnapshot;
+      },
+    });
+
+    const exportOutcome = await runCli(['layout', 'export', '--file', snapshotPath]);
+    expect(exportOutcome).toEqual({ kind: 'handled', exitCode: 0 });
+    expect(logs[0]).toBe(snapshotPath);
+    expect(JSON.parse(await fs.readFile(snapshotPath, 'utf8'))).toEqual(snapshot);
+
+    const importOutcome = await runCli(['layout', 'import', '--file', snapshotPath, '--json']);
+    expect(importOutcome).toEqual({ kind: 'handled', exitCode: 0 });
+    expect(importedSnapshot).toEqual(snapshot);
+    expect(JSON.parse(logs[1]!)).toMatchObject({
+      ok: true,
+      activeWorkspaceId: 2,
+      workspaceCount: 2,
+    });
+
+    logSpy.mockRestore();
     await server.close();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
