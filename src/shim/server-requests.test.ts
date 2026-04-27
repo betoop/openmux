@@ -4,11 +4,42 @@ import { createRequestHandler } from './server-requests';
 import { createShimServerState } from './server-state';
 import type { ShimHandlerContext } from './handlers';
 
-function createContext(overrides?: { pty?: Record<string, (...args: any[]) => any> }) {
+function createSocket(id: number) {
+  const socket = {
+    id,
+    destroyed: false,
+    end: vi.fn(() => {
+      socket.destroyed = true;
+    }),
+    destroy: vi.fn(() => {
+      socket.destroyed = true;
+    }),
+    write: vi.fn(),
+  } as any;
+  return socket;
+}
+
+function activateClient(
+  state: ReturnType<typeof createShimServerState>,
+  socket: any,
+  clientId: string,
+  sessionId: string
+): void {
+  state.clientIds.set(socket, clientId);
+  state.clientSessions.set(socket, sessionId);
+  state.activeClientsBySession.set(sessionId, { socket, clientId });
+}
+
+function createContext(overrides?: {
+  pty?: Record<string, (...args: any[]) => any>;
+  active?: boolean;
+  socket?: any;
+}) {
   const state = createShimServerState();
-  const socket = { id: 1 } as any;
-  state.activeClient = socket;
-  state.activeClientId = 'client-1';
+  const socket = overrides?.socket ?? createSocket(1);
+  if (overrides?.active !== false) {
+    activateClient(state, socket, 'client-1', 'session-1');
+  }
 
   const responses: Array<{ requestId: number; result: unknown }> = [];
   const errors: Array<{ requestId: number; error: string }> = [];
@@ -24,8 +55,15 @@ function createContext(overrides?: { pty?: Record<string, (...args: any[]) => an
       title: 'editor',
       lastCommand: 'git status',
     }),
+    create: () => 'pty-new',
+    destroy: () => {},
+    destroyAll: () => {},
     getCwd: () => '/live-cwd',
     getForegroundProcess: () => 'vim',
+    listAll: () => ['pty-1'],
+    subscribeToLifecycle: () => () => {},
+    subscribeToTitle: () => () => {},
+    subscribeToAllActivity: () => () => {},
     getGitInfo: (_ptyId: string, options?: { includeDiffStats?: boolean }) => ({
       branch: 'main',
       repoKey: '/repo',
@@ -67,6 +105,7 @@ function createContext(overrides?: { pty?: Record<string, (...args: any[]) => an
     socket,
     responses,
     errors,
+    state,
     handleRequest: createRequestHandler(context),
   };
 }
@@ -75,6 +114,133 @@ describe('shim/server-requests', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('allows different sessions to keep independent active clients', async () => {
+    const fixture = createContext({ active: false });
+    const socketA = createSocket(1);
+    const socketB = createSocket(2);
+
+    await fixture.handleRequest(
+      socketA,
+      {
+        type: 'request',
+        requestId: 1,
+        method: 'hello',
+        params: { clientId: 'client-a', sessionId: 'session-a' },
+      },
+      []
+    );
+    await fixture.handleRequest(
+      socketB,
+      {
+        type: 'request',
+        requestId: 2,
+        method: 'hello',
+        params: { clientId: 'client-b', sessionId: 'session-b' },
+      },
+      []
+    );
+
+    expect(fixture.state.activeClientsBySession.get('session-a')?.socket).toBe(socketA);
+    expect(fixture.state.activeClientsBySession.get('session-b')?.socket).toBe(socketB);
+    expect(socketA.end).not.toHaveBeenCalled();
+    expect(socketB.end).not.toHaveBeenCalled();
+  });
+
+  it('detaches only the previous active client for the same session', async () => {
+    const fixture = createContext({ active: false });
+    const socketA = createSocket(1);
+    const socketB = createSocket(2);
+
+    await fixture.handleRequest(
+      socketA,
+      {
+        type: 'request',
+        requestId: 1,
+        method: 'hello',
+        params: { clientId: 'client-a', sessionId: 'session-a' },
+      },
+      []
+    );
+    await fixture.handleRequest(
+      socketB,
+      {
+        type: 'request',
+        requestId: 2,
+        method: 'hello',
+        params: { clientId: 'client-b', sessionId: 'session-a' },
+      },
+      []
+    );
+
+    expect(fixture.state.activeClientsBySession.get('session-a')?.socket).toBe(socketB);
+    expect(socketA.end).toHaveBeenCalledTimes(1);
+    expect(socketB.end).not.toHaveBeenCalled();
+    expect(fixture.state.revokedClientIds.has('client-a')).toBe(true);
+  });
+
+  it('rejects non-hello requests from a superseded client in the same session', async () => {
+    const fixture = createContext({ active: false });
+    const socketA = createSocket(1);
+    const socketB = createSocket(2);
+
+    await fixture.handleRequest(
+      socketA,
+      {
+        type: 'request',
+        requestId: 1,
+        method: 'hello',
+        params: { clientId: 'client-a', sessionId: 'session-a' },
+      },
+      []
+    );
+    await fixture.handleRequest(
+      socketB,
+      {
+        type: 'request',
+        requestId: 2,
+        method: 'hello',
+        params: { clientId: 'client-b', sessionId: 'session-a' },
+      },
+      []
+    );
+    await fixture.handleRequest(
+      socketA,
+      {
+        type: 'request',
+        requestId: 3,
+        method: 'listAll',
+        params: {},
+      },
+      []
+    );
+
+    expect(fixture.errors).toContainEqual({ requestId: 3, error: 'Inactive client' });
+    expect(socketA.end).toHaveBeenCalledTimes(2);
+  });
+
+  it('filters listAll results to the requesting client session', async () => {
+    const fixture = createContext({
+      pty: {
+        listAll: () => ['pty-a', 'pty-b'],
+      },
+    });
+    fixture.state.ptySessions.set('pty-a', 'session-1');
+    fixture.state.ptySessions.set('pty-b', 'session-2');
+
+    await fixture.handleRequest(
+      fixture.socket,
+      {
+        type: 'request',
+        requestId: 1,
+        method: 'listAll',
+        params: {},
+      },
+      []
+    );
+
+    expect(fixture.responses[0]?.result).toEqual({ ptyIds: ['pty-a'] });
   });
 
   it('returns consolidated PTY metadata', async () => {

@@ -9,7 +9,7 @@ import { packDirtyUpdate } from '../../terminal/cell-serialization';
 import { buildGuestKey } from '../../terminal/kitty-graphics/sequence-utils';
 import { ShimConnectionError } from '../../effect/errors';
 import type { KittyHandlers } from '../server/kitty';
-import type { ShimServerState } from '../server-state';
+import { isActiveClientForSession, type ShimServerState } from '../server-state';
 import { asPtyId } from '../../effect/types';
 import type { SendEvent, WithPty, AttachContext } from './types';
 
@@ -222,6 +222,6 @@ export function allowBootstrapReplay(
   options?: { bootstrap?: boolean; attach?: AttachContext }
 ): boolean {
   if (!options?.bootstrap || !options.attach) return false;
-  const { socket, clientId } = options.attach;
-  return state.activeClient === socket && state.activeClientId === clientId;
+  const { socket, clientId, sessionId } = options.attach;
+  return isActiveClientForSession(state, socket, clientId, sessionId);
 }

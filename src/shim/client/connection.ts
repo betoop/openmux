@@ -15,6 +15,10 @@ import {
 import { createFrameHandler, type FrameHandlerDeps } from './frame-handler';
 import { createSocketDataStream } from './socket-stream';
 import { ShimConnectionError } from '../../effect/errors';
+import {
+  getActiveSessionIdForShim,
+  onActiveSessionIdForShimChange,
+} from '../../effect/bridge/app-coordinator-bridge';
 
 const CLIENT_VERSION = 1;
 const CLIENT_ID = `client_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -22,8 +26,11 @@ const CLIENT_ID = `client_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 type PendingRequest = {
   resolve: (value: { header: ShimHeader; payloads: Buffer[] }) => void;
   reject: (error: Error) => void;
+  timeout?: ReturnType<typeof setTimeout>;
 };
 
+// A lost shim response should fail the caller instead of leaving UI flows waiting forever.
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const pendingRequests = new Map<number, PendingRequest>();
 let nextRequestId = 1;
 let socket: net.Socket | null = null;
@@ -33,8 +40,44 @@ let spawnAttempted = false;
 let shimPid: number | null = null;
 let detached = false;
 let socketDataStop: (() => void) | null = null;
+let attachedSessionId: string | null = null;
 
 const detachedSubscribers = new Set<() => void>();
+
+function getShimSocketDir(): string {
+  return process.env.OPENMUX_SHIM_SOCKET_DIR ?? SHIM_SOCKET_DIR;
+}
+
+function getShimSocketPath(): string {
+  return process.env.OPENMUX_SHIM_SOCKET_PATH ?? SHIM_SOCKET_PATH;
+}
+
+function takePendingRequest(requestId: number): PendingRequest | undefined {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return undefined;
+
+  pendingRequests.delete(requestId);
+  if (pending.timeout) clearTimeout(pending.timeout);
+  return pending;
+}
+
+function rejectPendingRequests(error: Error): void {
+  for (const pending of pendingRequests.values()) {
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.reject(error);
+  }
+  pendingRequests.clear();
+}
+
+function clearSocketState(client?: net.Socket): void {
+  // Close events can arrive late; do not let an old socket clear a newer connection.
+  if (client && socket && socket !== client) return;
+
+  socketDataStop?.();
+  socketDataStop = null;
+  socket = null;
+  reader = null;
+}
 
 /**
  * Handles incoming response frames from the shim server.
@@ -48,10 +91,9 @@ function handleResponseFrame(header: ShimHeader, payloads: Buffer[]): boolean {
     return false;
   }
 
-  const pending = pendingRequests.get(header.requestId);
+  const pending = takePendingRequest(header.requestId);
   if (!pending) return false;
 
-  pendingRequests.delete(header.requestId);
   if (header.ok) {
     pending.resolve({ header, payloads });
   } else {
@@ -68,58 +110,17 @@ const handleFrame = createFrameHandler({
   },
 } satisfies FrameHandlerDeps);
 
-/**
- * Connects to the shim server socket, creating directory if needed.
- * Sets up frame reader and event handlers.
- * @returns void on success, ShimConnectionError on failure
- */
-async function connectSocket(): Promise<void | ShimConnectionError> {
-  const mkdirResult = await errore.tryAsync<string | undefined, ShimConnectionError>({
-    try: () => fs.mkdir(SHIM_SOCKET_DIR, { recursive: true }),
-    catch: (e) =>
-      new ShimConnectionError({ reason: `Failed to create socket directory: ${e}`, cause: e }),
-  });
-  if (mkdirResult instanceof ShimConnectionError) return mkdirResult;
-
-  const connectResult = await errore.tryAsync<void, ShimConnectionError>({
-    try: () =>
-      new Promise<void>((resolve, reject) => {
-        const client = net.createConnection(SHIM_SOCKET_PATH);
-        const handleError = (error: Error) => {
-          client.removeListener('connect', handleConnect);
-          reject(error);
-        };
-        const handleConnect = () => {
-          client.removeListener('error', handleError);
-          socket = client;
-          reader = new FrameReader();
-          client.on('error', () => {
-            // ignore, reconnect on demand
-          });
-          client.on('close', () => {
-            socketDataStop?.();
-            socketDataStop = null;
-            socket = null;
-            reader = null;
-            markDetached();
-          });
-          socketDataStop?.();
-          socketDataStop = createSocketDataStream(client, reader, handleFrame);
-          resolve();
-        };
-        client.once('error', handleError);
-        client.once('connect', handleConnect);
-      }),
-    catch: (e) =>
-      new ShimConnectionError({ reason: `Failed to connect to socket: ${e}`, cause: e }),
-  });
-  if (connectResult instanceof ShimConnectionError) return connectResult;
+async function sendHelloForSession(sessionId: string | null): Promise<void | ShimConnectionError> {
+  const params: Record<string, unknown> = { clientId: CLIENT_ID, version: CLIENT_VERSION };
+  if (sessionId) {
+    params.sessionId = sessionId;
+  }
 
   const helloResult = await errore.tryAsync<
     { header: ShimHeader; payloads: Buffer[] },
     ShimConnectionError
   >({
-    try: () => sendRequest('hello', { clientId: CLIENT_ID, version: CLIENT_VERSION }),
+    try: () => sendRequest('hello', params),
     catch: (e) => {
       if (e instanceof Error && e.message.toLowerCase().includes('detached')) {
         socket?.destroy();
@@ -136,6 +137,78 @@ async function connectSocket(): Promise<void | ShimConnectionError> {
   if (helloData && typeof helloData.pid === 'number') {
     shimPid = helloData.pid;
   }
+  attachedSessionId = sessionId;
+}
+
+async function attachActiveSession(sessionId: string | null): Promise<void> {
+  if (!sessionId || detached) return;
+  if (!socket && !connecting) return;
+  if (attachedSessionId === sessionId && socket && !socket.destroyed) return;
+
+  const connectResult = await ensureConnected();
+  if (connectResult instanceof ShimConnectionError) {
+    console.warn('[shim-client] Failed to attach active session:', connectResult.message);
+    return;
+  }
+  if (attachedSessionId === sessionId) return;
+
+  const helloResult = await sendHelloForSession(sessionId);
+  if (helloResult instanceof ShimConnectionError) {
+    console.warn('[shim-client] Failed to attach active session:', helloResult.message);
+  }
+}
+
+onActiveSessionIdForShimChange((sessionId) => {
+  void attachActiveSession(sessionId);
+});
+
+/**
+ * Connects to the shim server socket, creating directory if needed.
+ * Sets up frame reader and event handlers.
+ * @returns void on success, ShimConnectionError on failure
+ */
+async function connectSocket(): Promise<void | ShimConnectionError> {
+  const mkdirResult = await errore.tryAsync<string | undefined, ShimConnectionError>({
+    try: () => fs.mkdir(getShimSocketDir(), { recursive: true }),
+    catch: (e) =>
+      new ShimConnectionError({ reason: `Failed to create socket directory: ${e}`, cause: e }),
+  });
+  if (mkdirResult instanceof ShimConnectionError) return mkdirResult;
+
+  const connectResult = await errore.tryAsync<void, ShimConnectionError>({
+    try: () =>
+      new Promise<void>((resolve, reject) => {
+        const client = net.createConnection(getShimSocketPath());
+        const handleError = (error: Error) => {
+          client.removeListener('connect', handleConnect);
+          reject(error);
+        };
+        const handleConnect = () => {
+          client.removeListener('error', handleError);
+          socket = client;
+          reader = new FrameReader();
+          client.on('error', () => {
+            // ignore, reconnect on demand
+          });
+          client.on('close', () => {
+            clearSocketState(client);
+            // A plain socket close is transport failure, not an explicit server detach.
+            rejectPendingRequests(new ShimConnectionError({ reason: 'Shim socket closed' }));
+          });
+          socketDataStop?.();
+          socketDataStop = createSocketDataStream(client, reader, handleFrame);
+          resolve();
+        };
+        client.once('error', handleError);
+        client.once('connect', handleConnect);
+      }),
+    catch: (e) =>
+      new ShimConnectionError({ reason: `Failed to connect to socket: ${e}`, cause: e }),
+  });
+  if (connectResult instanceof ShimConnectionError) return connectResult;
+
+  const helloResult = await sendHelloForSession(getActiveSessionIdForShim());
+  if (helloResult instanceof ShimConnectionError) return helloResult;
 
   const colors = getHostColors();
   if (colors) {
@@ -257,7 +330,8 @@ export async function sendRequestDirect(
   payloads: ArrayBuffer[] = [],
   timeoutMs?: number
 ): Promise<{ header: ShimHeader; payloads: Buffer[] } | ShimConnectionError> {
-  if (!socket || socket.destroyed) {
+  const currentSocket = socket;
+  if (!currentSocket || currentSocket.destroyed) {
     return new ShimConnectionError({ reason: 'Shim socket not available' });
   }
 
@@ -271,23 +345,29 @@ export async function sendRequestDirect(
   };
 
   return new Promise((resolve) => {
+    const timeout = timeoutMs
+      ? setTimeout(() => {
+          const pending = takePendingRequest(requestId);
+          if (!pending) return;
+          pending.reject(new ShimConnectionError({ reason: 'Shim request timed out' }));
+        }, timeoutMs)
+      : undefined;
+
     pendingRequests.set(requestId, {
       resolve,
-      reject: (error) => resolve(new ShimConnectionError({ reason: error.message })),
+      reject: (error) =>
+        resolve(
+          error instanceof ShimConnectionError
+            ? error
+            : new ShimConnectionError({ reason: error.message })
+        ),
+      timeout,
     });
 
-    if (timeoutMs) {
-      setTimeout(() => {
-        if (!pendingRequests.has(requestId)) return;
-        pendingRequests.delete(requestId);
-        resolve(new ShimConnectionError({ reason: 'Shim request timed out' }));
-      }, timeoutMs);
-    }
-
-    socket?.write(encodeFrame(header, payloads), (err) => {
+    currentSocket.write(encodeFrame(header, payloads), (err) => {
       if (!err) return;
-      pendingRequests.delete(requestId);
-      resolve(new ShimConnectionError({ reason: err.message }));
+      const pending = takePendingRequest(requestId);
+      pending?.reject(new ShimConnectionError({ reason: err.message, cause: err }));
     });
   });
 }
@@ -304,11 +384,20 @@ export async function sendRequestDirect(
 export async function sendRequest(
   method: string,
   params?: Record<string, unknown>,
-  payloads: ArrayBuffer[] = []
+  payloads: ArrayBuffer[] = [],
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<{ header: ShimHeader; payloads: Buffer[] }> {
   const connectResult = await ensureConnected();
   if (connectResult instanceof ShimConnectionError) throw connectResult;
-  if (!socket) throw new ShimConnectionError({ reason: 'Shim socket not available' });
+  const activeSessionId = getActiveSessionIdForShim();
+  if (method !== 'hello' && activeSessionId && attachedSessionId !== activeSessionId) {
+    const helloResult = await sendHelloForSession(activeSessionId);
+    if (helloResult instanceof ShimConnectionError) throw helloResult;
+  }
+  const currentSocket = socket;
+  if (!currentSocket || currentSocket.destroyed) {
+    throw new ShimConnectionError({ reason: 'Shim socket not available' });
+  }
 
   const requestId = nextRequestId++;
   const header: ShimHeader = {
@@ -320,8 +409,21 @@ export async function sendRequest(
   };
 
   return new Promise((resolve, reject) => {
-    pendingRequests.set(requestId, { resolve, reject });
-    socket?.write(encodeFrame(header, payloads));
+    const timeout =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            const pending = takePendingRequest(requestId);
+            if (!pending) return;
+            pending.reject(new ShimConnectionError({ reason: 'Shim request timed out' }));
+          }, timeoutMs)
+        : undefined;
+
+    pendingRequests.set(requestId, { resolve, reject, timeout });
+    currentSocket.write(encodeFrame(header, payloads), (err) => {
+      if (!err) return;
+      const pending = takePendingRequest(requestId);
+      pending?.reject(new ShimConnectionError({ reason: err.message, cause: err }));
+    });
   });
 }
 
@@ -382,6 +484,9 @@ export async function waitForShim(): Promise<void | ShimConnectionError> {
 function markDetached(): void {
   if (detached) return;
   detached = true;
+  attachedSessionId = null;
+  // Detach is a terminal protocol event for this client, so all in-flight work must fail.
+  rejectPendingRequests(new ShimConnectionError({ reason: 'Shim client detached' }));
   for (const callback of detachedSubscribers) {
     callback();
   }

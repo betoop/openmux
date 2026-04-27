@@ -25,8 +25,6 @@ const makeImageInfo = (id: number): KittyGraphicsImageInfo => ({
   transmitTime: 1n,
 });
 
-import { setKittyTransmitForwarder } from '../../src/shim/kitty-forwarder';
-
 describe('createServerHandlers detach behavior', () => {
   it('preserves kitty replay state across detach', async () => {
     const state = createShimServerState();
@@ -42,7 +40,9 @@ describe('createServerHandlers detach behavior', () => {
     });
 
     const socket = { destroyed: false } as unknown as net.Socket;
-    state.activeClient = socket;
+    state.clientIds.set(socket, 'client-1');
+    state.clientSessions.set(socket, 'session-1');
+    state.activeClientsBySession.set('session-1', { socket, clientId: 'client-1' });
 
     // Set up a mock forwarder that records transmits
     const recordedTransmits = new Map<string, string[]>();
@@ -75,7 +75,7 @@ describe('createServerHandlers detach behavior', () => {
 
     await handlers.detachClient(socket);
 
-    expect(state.activeClient).toBeNull();
+    expect(state.activeClientsBySession.size).toBe(0);
     expect(state.ptySubscriptions.size).toBe(0);
     expect(state.ptyEmulators.has('pty-1')).toBe(false);
 

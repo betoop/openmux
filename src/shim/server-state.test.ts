@@ -33,13 +33,18 @@ describe('shim/server-state', () => {
 
   it('reset clears revoked client tracking and active client state', () => {
     const state = createShimServerState();
+    const socket = { id: 1 } as any;
     rememberRevokedClientId(state, 'client-1');
-    state.activeClientId = 'client-2';
+    state.clientIds.set(socket, 'client-2');
+    state.clientSessions.set(socket, 'session-1');
+    state.activeClientsBySession.set('session-1', { socket, clientId: 'client-2' });
 
     resetShimServerState(state);
 
     expect(state.revokedClientIds.size).toBe(0);
     expect(state.revokedClientOrder).toEqual([]);
-    expect(state.activeClientId).toBeNull();
+    expect(state.clientIds.size).toBe(0);
+    expect(state.clientSessions.size).toBe(0);
+    expect(state.activeClientsBySession.size).toBe(0);
   });
 });

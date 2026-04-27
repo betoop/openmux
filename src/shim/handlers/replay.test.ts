@@ -9,11 +9,14 @@ import type { ShimHeader } from '../protocol';
 
 describe('shim handlers/replay (litmus)', () => {
   let state: ReturnType<typeof createShimServerState>;
+  let socket: net.Socket;
 
   beforeEach(() => {
     state = createShimServerState();
-    state.activeClient = { id: 1 } as unknown as net.Socket;
-    state.activeClientId = 'client-1';
+    socket = { id: 1 } as unknown as net.Socket;
+    state.clientIds.set(socket, 'client-1');
+    state.clientSessions.set(socket, 'session-1');
+    state.activeClientsBySession.set('session-1', { socket, clientId: 'client-1' });
   });
 
   describe('allowBootstrapReplay', () => {
@@ -30,8 +33,9 @@ describe('shim handlers/replay (litmus)', () => {
         allowBootstrapReplay(state, {
           bootstrap: true,
           attach: {
-            socket: state.activeClient!,
+            socket,
             clientId: 'client-1',
+            sessionId: 'session-1',
           },
         })
       ).toBe(true);
@@ -45,6 +49,7 @@ describe('shim handlers/replay (litmus)', () => {
           attach: {
             socket: otherSocket,
             clientId: 'client-1',
+            sessionId: 'session-1',
           },
         })
       ).toBe(false);
@@ -55,16 +60,29 @@ describe('shim handlers/replay (litmus)', () => {
         allowBootstrapReplay(state, {
           bootstrap: true,
           attach: {
-            socket: state.activeClient!,
+            socket,
             clientId: 'client-2',
+            sessionId: 'session-1',
+          },
+        })
+      ).toBe(false);
+    });
+
+    it('should return false for different sessionId', () => {
+      expect(
+        allowBootstrapReplay(state, {
+          bootstrap: true,
+          attach: {
+            socket,
+            clientId: 'client-1',
+            sessionId: 'session-2',
           },
         })
       ).toBe(false);
     });
 
     it('should return false when active client is cleared', () => {
-      state.activeClient = null;
-      state.activeClientId = null;
+      state.activeClientsBySession.clear();
 
       expect(
         allowBootstrapReplay(state, {
@@ -72,6 +90,7 @@ describe('shim handlers/replay (litmus)', () => {
           attach: {
             socket: { id: 3 } as unknown as net.Socket,
             clientId: 'client-1',
+            sessionId: 'session-1',
           },
         })
       ).toBe(false);

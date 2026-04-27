@@ -142,4 +142,5 @@ export {
   clearSessionCommandMap,
   setActiveSessionIdForShim,
   getActiveSessionIdForShim,
+  onActiveSessionIdForShimChange,
 } from './app-coordinator-bridge';

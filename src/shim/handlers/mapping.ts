@@ -17,15 +17,13 @@ export function registerMapping(
   map.set(paneId, ptyId);
   state.sessionPanes.set(sessionId, map);
   state.ptyToPane.set(ptyId, { sessionId, paneId });
+  state.ptySessions.set(ptyId, sessionId);
 }
 
 /**
  * Remove all mappings for a given PTY ID
  */
-export function removeMappingForPty(
-  state: ShimServerState,
-  ptyId: string
-): void {
+export function removeMappingForPty(state: ShimServerState, ptyId: string): void {
   const info = state.ptyToPane.get(ptyId);
   if (!info) return;
   const map = state.sessionPanes.get(info.sessionId);
@@ -36,6 +34,7 @@ export function removeMappingForPty(
     }
   }
   state.ptyToPane.delete(ptyId);
+  state.ptySessions.delete(ptyId);
 }
 
 /**
@@ -54,16 +53,26 @@ export function getPaneForPty(
 export function clearAllMappings(state: ShimServerState): void {
   state.sessionPanes.clear();
   state.ptyToPane.clear();
+  state.ptySessions.clear();
 }
 
 /**
  * Get all PTY IDs mapped to a session
  */
-export function getPtyIdsForSession(
-  state: ShimServerState,
-  sessionId: string
-): string[] {
+export function getPtyIdsForSession(state: ShimServerState, sessionId: string): string[] {
+  const ids = new Set<string>();
+  for (const [ptyId, mappedSessionId] of state.ptySessions.entries()) {
+    if (mappedSessionId === sessionId) {
+      ids.add(ptyId);
+    }
+  }
+
   const map = state.sessionPanes.get(sessionId);
-  if (!map) return [];
-  return Array.from(map.values());
+  if (map) {
+    for (const ptyId of map.values()) {
+      ids.add(ptyId);
+    }
+  }
+
+  return Array.from(ids);
 }

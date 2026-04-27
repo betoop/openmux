@@ -1,7 +1,7 @@
 /**
  * Shim Events Handler - Litmus Tests
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, vi } from 'bun:test';
 import type net from 'net';
 import { createShimServerState } from '../server-state';
 import { shouldSuppressBootstrappingEvent, isCurrentAttach, createEventSender } from './events';
@@ -13,6 +13,12 @@ describe('shim handlers/events (litmus)', () => {
   beforeEach(() => {
     state = createShimServerState();
   });
+
+  const setActive = (sessionId: string, socket: net.Socket, clientId: string) => {
+    state.clientIds.set(socket, clientId);
+    state.clientSessions.set(socket, sessionId);
+    state.activeClientsBySession.set(sessionId, { socket, clientId });
+  };
 
   describe('shouldSuppressBootstrappingEvent', () => {
     it('should not suppress when no bootstrapping PTY', () => {
@@ -62,35 +68,37 @@ describe('shim handlers/events (litmus)', () => {
   describe('isCurrentAttach', () => {
     it('should return true for matching socket and clientId', () => {
       const mockSocket = { id: 1 } as unknown as net.Socket;
-      state.activeClient = mockSocket;
-      state.activeClientId = 'client-1';
+      setActive('session-1', mockSocket, 'client-1');
 
-      expect(isCurrentAttach(state, mockSocket, 'client-1')).toBe(true);
+      expect(isCurrentAttach(state, mockSocket, 'client-1', 'session-1')).toBe(true);
     });
 
     it('should return false for different socket', () => {
       const mockSocket1 = { id: 1 } as unknown as net.Socket;
       const mockSocket2 = { id: 2 } as unknown as net.Socket;
-      state.activeClient = mockSocket1;
-      state.activeClientId = 'client-1';
+      setActive('session-1', mockSocket1, 'client-1');
 
-      expect(isCurrentAttach(state, mockSocket2, 'client-1')).toBe(false);
+      expect(isCurrentAttach(state, mockSocket2, 'client-1', 'session-1')).toBe(false);
     });
 
     it('should return false for different clientId', () => {
       const mockSocket = { id: 1 } as unknown as net.Socket;
-      state.activeClient = mockSocket;
-      state.activeClientId = 'client-1';
+      setActive('session-1', mockSocket, 'client-1');
 
-      expect(isCurrentAttach(state, mockSocket, 'client-2')).toBe(false);
+      expect(isCurrentAttach(state, mockSocket, 'client-2', 'session-1')).toBe(false);
+    });
+
+    it('should return false for different sessionId', () => {
+      const mockSocket = { id: 1 } as unknown as net.Socket;
+      setActive('session-1', mockSocket, 'client-1');
+
+      expect(isCurrentAttach(state, mockSocket, 'client-1', 'session-2')).toBe(false);
     });
 
     it('should return false when there is no active client match', () => {
       const mockSocket = { id: 1 } as unknown as net.Socket;
-      state.activeClient = null;
-      state.activeClientId = null;
 
-      expect(isCurrentAttach(state, mockSocket, 'client-1')).toBe(false);
+      expect(isCurrentAttach(state, mockSocket, 'client-1', 'session-1')).toBe(false);
     });
   });
 
@@ -106,6 +114,23 @@ describe('shim handlers/events (litmus)', () => {
 
       // Should not throw
       sender(header, []);
+    });
+
+    it('routes PTY events to the active client for that PTY session only', () => {
+      const writeA = vi.fn();
+      const writeB = vi.fn();
+      const socketA = { write: writeA, destroyed: false } as unknown as net.Socket;
+      const socketB = { write: writeB, destroyed: false } as unknown as net.Socket;
+      setActive('session-a', socketA, 'client-a');
+      setActive('session-b', socketB, 'client-b');
+      state.ptySessions.set('pty-a', 'session-a');
+      state.ptySessions.set('pty-b', 'session-b');
+
+      const sender = createEventSender(state);
+      sender({ type: 'ptyUpdate', ptyId: 'pty-a' }, []);
+
+      expect(writeA).toHaveBeenCalledTimes(1);
+      expect(writeB).not.toHaveBeenCalled();
     });
   });
 });
