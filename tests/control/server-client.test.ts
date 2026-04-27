@@ -6,6 +6,7 @@ import type { Workspace } from '../../src/core/types';
 import type { LayoutState } from '../../src/core/operations/layout-actions';
 import { DEFAULT_CONFIG } from '../../src/core/config';
 import type { ITerminalEmulator } from '../../src/terminal/emulator-interface';
+import type { TemplateSession } from '../../src/effect/models';
 
 const mockControlProtocol = async () => {
   const protocol = await import('../../src/control/protocol');
@@ -213,6 +214,131 @@ describe('control server smoke', () => {
 
     await client.request('layout.setMode', { mode: 'stacked' });
     expect(nextLayoutMode).toBe('stacked');
+
+    client.close();
+    await server.close();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  test('layout snapshot commands export and import declarative templates', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmux-control-'));
+    process.env.OPENMUX_CONTROL_SOCKET_DIR = tempDir;
+    process.env.OPENMUX_CONTROL_SOCKET_PATH = path.join(tempDir, 'openmux-ui.sock');
+
+    await mockControlProtocol();
+
+    const { startControlServer } = await import('../../src/control/server');
+    const { connectControlClient } = await import('../../src/control/client');
+
+    const workspace: Workspace = {
+      id: 1,
+      label: 'dev',
+      mainPane: { id: 'pane-1', ptyId: 'pty-1', title: 'main' },
+      stackPanes: [],
+      focusedPaneId: 'pane-1',
+      activeStackIndex: 0,
+      layoutMode: 'vertical',
+      zoomed: false,
+    };
+
+    const layoutState = createLayoutState(workspace);
+    const snapshot: TemplateSession & { activeWorkspaceId: 2 } = {
+      version: 1,
+      id: 'snapshot-1',
+      name: 'Snapshot',
+      createdAt: 1,
+      updatedAt: 1,
+      activeWorkspaceId: 2,
+      defaults: {
+        workspaceCount: 2,
+        paneCount: 1,
+        layoutMode: 'vertical',
+        cwd: '/tmp',
+      },
+      workspaces: [
+        {
+          id: 1,
+          label: 'dev',
+          layoutMode: 'vertical',
+          panes: [{ role: 'main', cwd: '/tmp' }],
+          layout: {
+            main: { type: 'pane', cwd: '/tmp' },
+            stack: [],
+          },
+        },
+        {
+          id: 2,
+          label: 'ops',
+          layoutMode: 'stacked',
+          panes: [{ role: 'main', cwd: '/var/log' }],
+          layout: {
+            main: { type: 'pane', cwd: '/var/log' },
+            stack: [],
+          },
+        },
+      ],
+    };
+    let exportName: string | undefined;
+    let importedSnapshot: unknown = null;
+
+    const server = await startControlServer({
+      getLayoutState: () => layoutState,
+      getActiveWorkspace: () => workspace,
+      switchWorkspace: () => {},
+      focusPane: () => {},
+      closePaneById: () => {},
+      splitPane: () => {},
+      setLayoutMode: () => {},
+      setWorkspaceLabel: () => {},
+      writeToPty: () => {},
+      getEmulator: () => null as ITerminalEmulator | null,
+      fetchTerminalState: async () => null,
+      fetchScrollState: async () => null,
+      capturePty: async () => null,
+      isPtyActive: () => true,
+      createSession: async () => ({
+        id: 'session-1',
+        name: 'test',
+        createdAt: Date.now(),
+        lastSwitchedAt: Date.now(),
+        autoNamed: false,
+      }),
+      listSessions: () => [
+        {
+          id: 'session-1',
+          name: 'test',
+          createdAt: 1,
+          lastSwitchedAt: 2,
+          autoNamed: false,
+        },
+      ],
+      switchSession: async () => {},
+      getActiveSessionId: () => 'session-1',
+      exportLayoutSnapshot: async (name) => {
+        exportName = name;
+        return snapshot;
+      },
+      importLayoutSnapshot: async (nextSnapshot) => {
+        importedSnapshot = nextSnapshot;
+      },
+    });
+
+    const client = await connectControlClient({
+      socketPath: process.env.OPENMUX_CONTROL_SOCKET_PATH,
+      timeoutMs: 500,
+    });
+
+    const exported = await client.request('layout.export', { name: 'prod' });
+    expect(exportName).toBe('prod');
+    expect((exported.header.result as { snapshot: unknown }).snapshot).toEqual(snapshot);
+
+    const imported = await client.request('layout.import', { snapshot });
+    expect(importedSnapshot).toEqual(snapshot);
+    expect(imported.header.result).toMatchObject({
+      ok: true,
+      activeWorkspaceId: 2,
+      workspaceCount: 2,
+    });
 
     client.close();
     await server.close();

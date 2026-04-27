@@ -33,6 +33,8 @@ export function setupControlServer(params: {
       listSessions: () => params.session.state.sessions,
       switchSession: params.session.switchSession,
       getActiveSessionId: () => params.session.state.activeSessionId,
+      exportLayoutSnapshot: params.session.exportLayoutSnapshot,
+      importLayoutSnapshot: params.session.importLayoutSnapshot,
     })
       .then((created) => {
         server = created;
